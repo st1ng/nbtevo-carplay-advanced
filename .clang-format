@@ -1,0 +1,24 @@
+# Formatting of src/ (clang-format). hudglyphs.h is generated and not formatted.
+BasedOnStyle: LLVM
+ColumnLimit: 132
+IndentWidth: 2
+PointerAlignment: Right
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortEnumsOnASingleLine: false
+AlwaysBreakTemplateDeclarations: Yes
+AlignTrailingComments: true
+AlignConsecutiveMacros: true
+ReflowComments: false
+SortIncludes: Never
+IndentCaseLabels: true
+SpacesBeforeTrailingComments: 2
+BinPackArguments: true
+BinPackParameters: true
+Cpp11BracedListStyle: false
+FixNamespaceComments: true
+KeepEmptyLinesAtTheStartOfBlocks: false
+MaxEmptyLinesToKeep: 1

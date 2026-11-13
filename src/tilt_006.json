@@ -1,0 +1,109 @@
+{
+ "hmi": "006_017_006",
+ "name": "carplay_tilt",
+ "what": "CCarPlayActivity::handleControllerInput (0x43d42c) sends the iDrive controller tilts to CarPlay as knob directions (up/down/left/right fields of AuxIn CarPlayControllerInput, which NBTMediaMainApp turns into the CarPlay knob HID). The stock HMI hard-codes those four fields to 0: tilt up/down are dropped, tilt left goes out as Back and tilt right is left to the HMI (side panel).",
+ "how": [
+  "0x43d494..0x43d49c: the key filter (only rotate 0xd/0xe) becomes 9..14 (tilt up 9, down 10, left 11, right 12, rotate 13/14)",
+  "0x43d688: tilt left (0xb) no longer sets the Back field (Back stays on the BACK key, 2)",
+  "0x43dd14: skips the trace printf of this function, so its 16 instructions at 0x43d634 are free",
+  "0x43d634..0x43d664: zero the four direction words on the stack, store \"pressed\" in the one of key-9 (0..3), Voice field as before, jump to the send call 0x43d6d4",
+  "0x43d6b0: jump to that code instead of the original argument setup"
+ ],
+ "words": [
+  {
+   "addr": "0x43d494",
+   "orig": "e355000e",
+   "new": "e245c009"
+  },
+  {
+   "addr": "0x43d498",
+   "orig": "1355000d",
+   "new": "e35c0005"
+  },
+  {
+   "addr": "0x43d49c",
+   "orig": "1a0000a0",
+   "new": "8a0000a0"
+  },
+  {
+   "addr": "0x43d634",
+   "orig": "e59f0738",
+   "new": "e3a0c000"
+  },
+  {
+   "addr": "0x43d638",
+   "orig": "e1a01005",
+   "new": "e58dc000"
+  },
+  {
+   "addr": "0x43d63c",
+   "orig": "e1a02009",
+   "new": "e58dc004"
+  },
+  {
+   "addr": "0x43d640",
+   "orig": "e1a0300a",
+   "new": "e58dc008"
+  },
+  {
+   "addr": "0x43d644",
+   "orig": "e58d8000",
+   "new": "e58dc00c"
+  },
+  {
+   "addr": "0x43d648",
+   "orig": "ebf74d00",
+   "new": "e245c009"
+  },
+  {
+   "addr": "0x43d64c",
+   "orig": "e51b002c",
+   "new": "e35c0003"
+  },
+  {
+   "addr": "0x43d650",
+   "orig": "e5d03014",
+   "new": "978d810c"
+  },
+  {
+   "addr": "0x43d654",
+   "orig": "e3130004",
+   "new": "e355003a"
+  },
+  {
+   "addr": "0x43d658",
+   "orig": "0a000005",
+   "new": "01a05008"
+  },
+  {
+   "addr": "0x43d65c",
+   "orig": "e1a03009",
+   "new": "13a05000"
+  },
+  {
+   "addr": "0x43d660",
+   "orig": "e59f170c",
+   "new": "e58d5010"
+  },
+  {
+   "addr": "0x43d664",
+   "orig": "e1a02005",
+   "new": "ea00001a"
+  },
+  {
+   "addr": "0x43d688",
+   "orig": "03833001",
+   "new": "e320f000"
+  },
+  {
+   "addr": "0x43d6b0",
+   "orig": "e355003a",
+   "new": "eaffffdf"
+  },
+  {
+   "addr": "0x43dd14",
+   "orig": "e51b302c",
+   "new": "eafffe56"
+  }
+ ]
+}
