@@ -315,6 +315,19 @@ const Word kFsCode[] = {
 };
 // clang-format on
 
+// ID5_1811-490-1827D Build 34: the CARPLAY_FULLSCREEN flag reads, forced on (read from the car; same six ldrb + the variant query).
+// clang-format off
+const Word kFsCode1811[] = {
+  { 0x4427d8, 0xe5d00108, 0xe3a00001 },  // ldrb r0, [r0, #0x108] -> mov r0, #1
+  { 0x4427f4, 0xe5d00108, 0xe3a00001 },
+  { 0x4435e4, 0xe5d43108, 0xe3a03001 },  // ldrb r3, [r4, #0x108] -> mov r3, #1
+  { 0x443de8, 0xe5d43108, 0xe3a03001 },
+  { 0x4450e0, 0xe5d43108, 0xe3a03001 },
+  { 0x445584, 0xe5d43108, 0xe3a03001 },
+  { 0x442cb8, 0xe12fff33, 0xe3a00001 },  // isVariantSet(0x9C71): blx r3 -> mov r0, #1
+};
+// clang-format on
+
 // ---- HMI builds ---------------------------------------------------------------------------------------------------------------------
 // Addresses and offsets that depend on HmiMain3D. The build is chosen from version.txt; every word is still checked before it is written.
 //   006_017_006  ID5_1803-510-1749MA Build 71
@@ -359,6 +372,12 @@ const Build kBuilds[] = {
     /* tilt */ kTilt1703, sizeof kTilt1703 / sizeof kTilt1703[0],
     /* fs */   0, 0,                      // no CARPLAY_FULLSCREEN flag in this build
     /* pbw, pbwBmw, ini */ 2, 2, 1 },     // ini 1: the iPhone renders 1184 wide in the car (2026-11-12); 1180 kept it at "connecting"
+  { "ID5_1811-490-1827D Build 34", "1811-490",
+    /* touchFn, ctlSetFn, ctlProxy, playFn, playObj */ 0x442c24, 0x1fec17c, 0x4e60, 0x1fec0dc, 0x52b0,
+    /* tdFirst, tdEnd, tdTime, tdOrigin */             4, 8, 0x14, 0x18,   // CTouchData like 006; pressed reg r7 (handled in tilt words)
+    /* tilt */ kTilt1811, sizeof kTilt1811 / sizeof kTilt1811[0],
+    /* fs */   kFsCode1811, sizeof kFsCode1811 / sizeof kFsCode1811[0],
+    /* pbw, pbwBmw, ini */ 1, 1, 1 },
   { "ID5_1607-490-1610T Build 153", "1607-490 Build 153",
     /* touchFn, ctlSetFn, ctlProxy, playFn, playObj */ 0x8b4d24, 0x1ec2a24, 0x4d64, 0x1ec2984, 0x51b4,
     /* tdFirst, tdEnd, tdTime, tdOrigin */             8, 0xc, 0x18, 0x1c,

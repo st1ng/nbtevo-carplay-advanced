@@ -1,0 +1,112 @@
+{
+ "hmi": "ID5_1811-490-1827D Build 34",
+ "name": "carplay_tilt_1811",
+ "what": "Knob tilt (keys 9=up,10=down,11=left,12=right) -> CarPlay direction fields passed to ctlSetFn (0x1fec17c), which controllerHook routes to the knob shmem. Byte-distance identical to tilt_006; ONLY difference is the pressed register (r7 here vs r8 in 006), affecting tB+0x1c and tB+0x24.",
+ "anchors": {
+  "tA": "0x44408c",
+  "tB": "0x44422c",
+  "tC": "0x444924"
+ },
+ "checks": {
+  "tB+0x30 branch -> 0x4442cc (send is 0x4442cc)": true,
+  "tB+0x7c branch -> 0x44422c (tB is 0x44422c)": true,
+  "tC new word": "eafffe50"
+ },
+ "words": [
+  {
+   "addr": "0x44408c",
+   "orig": "e355000e",
+   "new": "e245c009"
+  },
+  {
+   "addr": "0x444090",
+   "orig": "1355000d",
+   "new": "e35c0005"
+  },
+  {
+   "addr": "0x444094",
+   "orig": "1a0000a0",
+   "new": "8a0000a0"
+  },
+  {
+   "addr": "0x44422c",
+   "orig": "e59f0750",
+   "new": "e3a0c000"
+  },
+  {
+   "addr": "0x444230",
+   "orig": "e1a01005",
+   "new": "e58dc000"
+  },
+  {
+   "addr": "0x444234",
+   "orig": "e1a02009",
+   "new": "e58dc004"
+  },
+  {
+   "addr": "0x444238",
+   "orig": "e1a0300a",
+   "new": "e58dc008"
+  },
+  {
+   "addr": "0x44423c",
+   "orig": "e58d7000",
+   "new": "e58dc00c"
+  },
+  {
+   "addr": "0x444240",
+   "orig": "ebf73274",
+   "new": "e245c009"
+  },
+  {
+   "addr": "0x444244",
+   "orig": "e51b002c",
+   "new": "e35c0003"
+  },
+  {
+   "addr": "0x444248",
+   "orig": "e5d03014",
+   "new": "978d710c"
+  },
+  {
+   "addr": "0x44424c",
+   "orig": "e3130004",
+   "new": "e355003a"
+  },
+  {
+   "addr": "0x444250",
+   "orig": "0a000005",
+   "new": "01a05007"
+  },
+  {
+   "addr": "0x444254",
+   "orig": "e1a03009",
+   "new": "13a05000"
+  },
+  {
+   "addr": "0x444258",
+   "orig": "e59f1724",
+   "new": "e58d5010"
+  },
+  {
+   "addr": "0x44425c",
+   "orig": "e1a02005",
+   "new": "ea00001a"
+  },
+  {
+   "addr": "0x444280",
+   "orig": "03833001",
+   "new": "e320f000"
+  },
+  {
+   "addr": "0x4442a8",
+   "orig": "e355003a",
+   "new": "eaffffdf"
+  },
+  {
+   "addr": "0x444924",
+   "orig": "e51b302c",
+   "new": "eafffe50"
+  }
+ ]
+}

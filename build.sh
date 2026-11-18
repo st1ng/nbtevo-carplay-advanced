@@ -22,7 +22,7 @@ for var, path in zip(sys.argv[1::2], sys.argv[2::2]):
     print("const Word %s[] = {" % var)
     for w in d["words"]: print("  { %s, 0x%s, 0x%s }," % (w["addr"], w["orig"], w["new"]))
     print("};")
-' kTilt006 src/tilt_006.json kTilt1703 src/tilt_1703.json kTilt1607 src/tilt_1607.json > out/tilt.inc
+' kTilt006 src/tilt_006.json kTilt1703 src/tilt_1703.json kTilt1607 src/tilt_1607.json kTilt1811 src/tilt_1811.json > out/tilt.inc
 
 # the plugin (loaded by the HMI)
 clang "${CF[@]}" -I. -c src/cpm.cpp -o out/cpm.o
