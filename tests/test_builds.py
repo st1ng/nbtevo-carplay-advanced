@@ -85,7 +85,7 @@ class TiltTables(unittest.TestCase):
         e = b['ID5_1607-490-1610T Build 153']
         self.assertEqual(e[:9], [0x8b4d24, 0x1ec2a24, 0x4d64, 0x1ec2984, 0x51b4, 8, 0xc, 0x18, 0x1c])
         self.assertEqual(e[9], 'kTilt1607')
-        self.assertEqual(e[11:], [0, 0, 0])                         # no Full-screen CarPlay on 1607: no layout, no carplay.ini
+        self.assertEqual(e[11:], [0, 3, 1])                         # BMW common layout patch (900 -> 1440, panel off screen), widened ini
         # the controller and playback proxies keep their distance from 1703's (both 0xfc lower), the send functions theirs (0xa0)
         e7 = b['ID5_1703-490-1650ZD Build 139']
         self.assertEqual(e7[2] - e[2], 0xfc)
@@ -102,7 +102,7 @@ class TiltTables(unittest.TestCase):
         self.assertEqual(rows[('ID5_1607-490-1610T_Build_153', 'libconn_carplay.so')],
                          'bbdbae7df387c448a3eec9dd607f9e7b196b899039a0123e6299d5ad0fa96827')
         self.assertEqual(rows[('ID5_1607-490-1610T_Build_153', 'scan')], 'none')
-        self.assertEqual(rows[('ID5_1607-490-1610T_Build_153', 'fullscreen')], 'none')
+        self.assertEqual(rows[('ID5_1607-490-1610T_Build_153', 'fullscreen')], 'pbw1607')
 
 
 @unittest.skipUnless(os.environ.get('CPA_HMI_1607'), 'CPA_HMI_1607: the plain HmiMain3D of ID5_1607-490-1610T Build 153')

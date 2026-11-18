@@ -1,8 +1,8 @@
 #!/bin/sh
 # SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
 # Installer for the "CarPlay Advanced Settings" HMI plugin (plugin/) on the NBT Evo, iDrive 5/6, HMI 006_017_006,
-# ID5_1703-490-1650ZD Build 139 or ID5_1607-490-1610T Build 153 (the plugin picks its addresses by build; no Full-screen CarPlay on
-# 1607).
+# ID5_1703-490-1650ZD Build 139 or ID5_1607-490-1610T Build 153 (the plugin picks its addresses by build; on 1607 Full-screen
+# CarPlay is for BMW only: its MINI layout has no CarPlay state the plugin can widen).
 #
 # Run it from a computer (macOS or Linux, POSIX sh + OpenSSH), in the folder with plugin/:
 #     sh carplay-advanced.sh install [--host root@169.254.199.99] [--dry-run] [--restart-hmi]
@@ -122,7 +122,7 @@ ID5_1703-490-1650ZD_Build_139    scan                28f623d87c3c934d058fb49b1d2
 ID5_1607-490-1610T_Build_153     HmiMain3D           0fa0e6e0de49235c02a8bcebca588dad18bd5eab512066ab44ed295a09ca3fbd
 ID5_1607-490-1610T_Build_153     libconn_carplay.so  bbdbae7df387c448a3eec9dd607f9e7b196b899039a0123e6299d5ad0fa96827
 ID5_1607-490-1610T_Build_153     scan                none
-ID5_1607-490-1610T_Build_153     fullscreen          none
+ID5_1607-490-1610T_Build_153     fullscreen          pbw1607
 EOF
 }
 # supported_as <sha256 of HmiMain3D> <sha256 of libconn_carplay.so>: prints the matching software, nothing if none

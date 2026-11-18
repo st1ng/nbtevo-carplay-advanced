@@ -99,7 +99,7 @@ hashes:
 |---|---|---|
 | 006_006_006 | ID5_1703-490-1650ZD Build 139 (MINI F54, 8.8") | tested in a car |
 | 006_017_006 | ID5_1803-510-1749MA Build 71 | not tried in a car yet |
-| NBTevo_ID5_1607_Release | ID5_1607-490-1610T Build 153 (BMW F20) | mapped by a contributor from a car's HMI; no Full-screen CarPlay; not tried in a car yet |
+| NBTevo_ID5_1607_Release | ID5_1607-490-1610T Build 153 (BMW F20) | mapped by a contributor from a car's HMI; full-screen CarPlay on the BMW common layout (the 900 px slot widened to the 1440 design screen, side panel moved off), **tested in a car**; the MINI layout of that build has no CarPlay state to widen |
 
 Before it changes anything, the installer reads the head unit's HMI and CarPlay library and compares their hashes with the list
 above. On other iDrive 5 software it **searches the HMI for the places the plugin uses** (about 20 s on your computer). If it finds

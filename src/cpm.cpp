@@ -329,9 +329,10 @@ const Word kFsCode[] = {
 //                the send), but takes the same CTouchData (list +8/+0xc, origin +0x1c, 10-byte fingers) and has the same entry.
 //                handleControllerInput 0x8b568c is 1703's code; the proxies of *(activity + 0xb0) sit 0xfc lower (controller +0x4d64,
 //                playback +0x51b4, touchpad +0x4dd0, touchscreen +0x4e3c); the two send functions (0x1ec2a24 controller, 0x1ec2984
-//                playback) are 0xa0 apart as in 1703 and serialise the same fields. No CARPLAY_FULLSCREEN flag; the layouts (common
-//                202 KB, MINI 17 KB) are an older format without LT_State_CarPlay or IsCarPlayFullscreen, so "Full-screen CarPlay" is
-//                not available (pbw 0): neither the layout nor carplay.ini is changed.
+//                playback) are 0xa0 apart as in 1703 and serialise the same fields. No CARPLAY_FULLSCREEN flag. The common layout is an
+//                older format (names are numeric indices, no LT_State_CarPlay): full screen widens its literal 900.0 slot to the design
+//                screenW 1440 and moves the side panel off the screen (pbw::patchCommon1607), with the carplay.ini widened too (ini 1).
+//                The MINI layout of this build has no CarPlay state of this shape: on a MINI of this build it is not available.
 struct Build {
   const char *id, *tag;
   u32 touchFn, ctlSetFn, ctlProxy, playFn, playObj;  // see the touchpad hook below
@@ -364,7 +365,7 @@ const Build kBuilds[] = {
     /* tdFirst, tdEnd, tdTime, tdOrigin */             8, 0xc, 0x18, 0x1c,
     /* tilt */ kTilt1607, sizeof kTilt1607 / sizeof kTilt1607[0],
     /* fs */   0, 0,                      // no CARPLAY_FULLSCREEN flag in this build
-    /* pbw, pbwBmw, ini */ 0, 0, 0 },     // layouts in an older format (no LT_State_CarPlay): no full screen yet
+    /* pbw, pbwBmw, ini */ 0, 3, 1 },     // BMW: common layout 900 -> 1440 and panel off screen; MINI layout: none
 };
 // clang-format on
 const Build *g_build;  // 0 = unknown build: menu only, nothing is written into the HMI
@@ -1280,7 +1281,8 @@ bool fullscreenLayout() {
                  : "CarPlayMenu: fullscreen: not the common iDrive 5 layout of this HMI build, nothing changed");
       return ok;
     }
-    u32 m = (b && o && n < cap) ? (!mini       ? pbw::patchCommon1703(b, n, o)
+    u32 m = (b && o && n < cap) ? (!mini       ? (kind == 3 ? pbw::patchCommon1607(b, n, o)
+                                                         : pbw::patchCommon1703(b, n, o))
                                    : kind == 2 ? pbw::patchFixed(b, n, o)
                                                : pbw::patch(b, n, o))
                                 : 0;

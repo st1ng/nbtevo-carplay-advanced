@@ -274,4 +274,44 @@ inline u32 patchCommon1703(const u8 *b, u32 n, u8 *out) {
   return m == n - kSlotLen1703 + sizeof kScreenW1703 - kPanelLen1703 + sizeof kPanelNew1703 ? m : 0;
 }
 
+// HMI ID5_1607-490-1610T Build 153 (BMW F20, issue #8): the common layout is an older format — no LT_State_CarPlay name, the names are
+// numeric indices. Its CarPlay state is the only one whose header is the index 21238; the "Table" slot is the literal 900.0 (the design
+// smallScreenW, the same 900 the car's carplay.ini uses), and the side panel sits at x = smallScreenW. As on 1703 the width becomes
+// the design screenW (1440, the whole screen; the 972 small screen keeps its width) and the panel moves to 2000. The state has one
+// slot and one panel position, and both patterns include their operands, so a match is also the check.
+// clang-format off
+static const u8 kState1607[] = { 0x0a,0x04,0x08,0xf6,0xa5,0x01 };              // header: LT_State_CarPlay (21238)
+static const u8 kSlot1607[] = {
+  0x08,0x15,0x10,0x02,0x10,0x02,0x10,0x02,                                      // vec3(float, float, float)
+  0x1a,0x0b,0x12,0x09,0x0a,0x07,0x2a,0x05,0x1d, 0x00,0x00,0x61,0x44,           // literal 900.0f
+  0x1a,0x0a,0x0a,0x04,0x08,0xcd,0x87,0x01,0x12,0x02,0x20,0x04 };               // defaultD (17357, constant)
+static const u8 kWide1607[4] = { 0x00,0x00,0xb4,0x44 };                        // 1440.0f
+static const u8 kPanel1607[] = {
+  0x08,0x15,0x10,0x02,0x10,0x02,0x10,0x02,                                      // vec3(float, float, float)
+  0x1a,0x0a,0x0a,0x04,0x08,0xb9,0x94,0x01,0x12,0x02,0x20,0x04,                  // ref smallScreenW (19001, constant)
+  0x1a,0x0b,0x12,0x09,0x0a,0x07,0x2a,0x05,0x1d, 0x00,0x00,0x00,0x00 };          // literal 0
+static const u8 kPanelNew1607[] = { 0x12,0x09,0x0a,0x07,0x2a,0x05,0x1d, 0x00,0x00,0xfa,0x44 };   // literal 2000.0f
+// clang-format on
+// out needs n + 64 bytes. Returns the new size (n + 1), 0 if it is not the expected layout (or already changed).
+inline u32 patchCommon1607(const u8 *b, u32 n, u8 *out) {
+  u32 s, e;
+  if (!stateRange(b, n, kState1607, sizeof kState1607, s, e))
+    return 0;
+  u32 w = findOnce(b + s, e - s, kSlot1607, sizeof kSlot1607),
+      p = findOnce(b + s, e - s, kPanel1607, sizeof kPanel1607);
+  if (!w || !p)
+    return 0;
+  Rep r = { s + p - 1 + 10, 10, kPanelNew1607, sizeof kPanelNew1607 };      // the smallScreenW ref
+  u32 m = rewrite(b, n, 0, &r, 1, out);
+  if (m != n + sizeof kPanelNew1607 - 10)
+    return 0;
+  u32 wo = s + w - 1 + 17;                                                  // the 900.0f operand
+  if (wo > s + p - 1)                                                       // after the panel? then its offset moved
+    return 0;
+  if (out[wo] != 0x00 || out[wo + 2] != 0x61 || out[wo + 3] != 0x44)        // still 900.0f
+    return 0;
+  memcpy(out + wo, kWide1607, 4);
+  return m;
+}
+
 }  // namespace pbw

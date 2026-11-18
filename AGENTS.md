@@ -213,9 +213,9 @@ boot.sh (from /bin/start_screen.sh): path-manager links for the layout, carplay.
   words are 1703's new words (the key filter's `bhi` keeps its own offset); the proxies of `*(activity + 0xb0)` sit 0xfc lower
   (controller +0x4d64, playback +0x51b4); `handleTouchInput` is restructured but has the same entry and reads the same `CTouchData`
   (the time at +0x18 is taken from 1703's layout and only times taps). No `CARPLAY_FULLSCREEN` flag reads, and the layouts are an
-  older format (no `LT_State_CarPlay` / `IsCarPlayFullscreen`), so the entry has `pbw 0, pbwBmw 0, ini 0` (`fullscreen none`): the
-  switch goes back off. `tests/test_builds.py` checks the tilt tables' consistency without firmware, and with `CPA_HMI_1607` every
-  1607 value against the file.
+  older format (no `LT_State_CarPlay` / `IsCarPlayFullscreen`), so full screen widens the common layout's CarPlay state (see
+  Full-screen CarPlay) and the entry has `pbw 0, pbwBmw 3, ini 1`; a MINI of this build keeps the option off. `tests/test_builds.py`
+  checks the tilt tables' consistency without firmware, and with `CPA_HMI_1607` every 1607 value against the file.
 - **Knob tilts** (`carplay_tilt`; `src/tilt_*.json`, generated into `out/tilt.inc`): `CCarPlayActivity::handleControllerInput` sends
   the controller to CarPlay as `CAuxIn_CarPlayControllerInput` (proxy, rotation, press, back, up, down, left, right, voice). Stock, the
   four direction fields are hard-coded 0: tilt up/down are dropped, tilt left goes out as Back, and tilt right moves the HMI's side
@@ -297,6 +297,12 @@ Three parts, all needed:
   the slot width the constant `screenW` and moves the panel to x 2000 (as on the MINI) -> `carplaymenu/Spec_State_Merged-common.pbw`,
   linked over both spellings of the common path (n - 14 bytes; checked against the package's file). The other brand's links and copy
   are removed whenever fullscreen is applied.
+- **1607**: no `LT_State_CarPlay` either — this build names things by index. The CarPlay state is the one whose header is 21238; its
+  slot is vec3(900.0, defaultD, eParam_WidgetHeight) and the panel sits at x `smallScreenW` (19001). `pbw::patchCommon1607` writes
+  1440.0 over the slot and replaces the panel's reference with the literal 2000 (+1 byte). `rewrite()` replaces only length-delimited
+  values, so the fixed32 float is memcpy'd in after the rewrite (as `patchFixed` does); doing both as `Rep`s silently leaves the width
+  unchanged. The MINI layout of this build has no CarPlay state of this shape, so `pbw 0` and a MINI keeps the option off. Tested in
+  the car (issue #8): 8.8" 1280 x 480, picture complete, panel gone.
 - **Size** (`iniwide.h`, `Wide`): the BMW sections become 007_047_001's own full-width sections: `900_540` -> 1440 x 540
   (`PhysicalWidth=242`, `dstw=1440`), `800_480` -> 1280 x 480 (208, `dstw=1280`). Both widths are multiples of 16; the heights stay. The
   working copy is changed by the width its `[Screen]` has (900 / 800; anything else is the MINI's 1184), the template by the brand.
@@ -722,7 +728,7 @@ display layer does; it is now shortened to 22, `shortRoad` below).
 |---|---|---|
 | 006_017_006 | `ID5_1803-510-1749MA Build 71` | all options, including the side-panel flag; hashes from the software package; not tried in a car |
 | 006_006_006 | `ID5_1703-490-1650ZD Build 139` (NBTevo_M17345I, MINI F54 8.8" 1280x480) | tested in a car |
-| NBTevo_ID5_1607_Release | `ID5_1607-490-1610T Build 153` (BMW F20, issue #8) | tilts, touchpad, zoom, HUD; no full screen (layout format); mapped by hand (`scan none`); hashes and its own `libconn_carplay.so` (`bbdbae7d...`) and mm-ipod (`5dd2351b...`) from the contributor (ghackt); not tried in a car |
+| NBTevo_ID5_1607_Release | `ID5_1607-490-1610T Build 153` (BMW F20, issue #8) | tilts, touchpad, zoom, HUD; full screen on its BMW common layout (900 -> 1440, panel off screen; tested in the car); mapped by hand (`scan none`); hashes and its own `libconn_carplay.so` (`bbdbae7d...`) and mm-ipod (`5dd2351b...`) from the contributor (ghackt); not tried in a car |
 
 Both builds on a **BMW** (common layout, 1440 / 1280 wide): the same HMI and Connectivity, so the same hashes and patches; full screen
 built and checked against the package's layouts only, **untested in a car** (nor in IDEmu with a BMW environment).
