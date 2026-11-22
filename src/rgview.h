@@ -29,9 +29,9 @@ void rg_log_line(const char *s);                           /* rghook.c: one line
 int rg_debug_log(void);                                    /* rghook.c: 1 = switch debug_log set (per-event lines), read once */
 void rgk_kick(void);                                       /* rgkombi.cpp: guidance arrived; starts the KOMBI worker once */
 void rgh_kick(void);                                       /* rghud.cpp: guidance arrived; starts the MOST HUD drawing once */
-/* rghook.c (KOMBI / MOST variants): once per mm-ipod, a watcher that outlives it and, when its pid has ended, runs libcpprobe.so with
-   CPM_CLEAR=<pid>: an arrow it left on the KOMBI or the MOST HUDTerminal (markers below, holding that pid) is cleared */
-void rg_watch_once(void);
+/* rghook.c: once per mm-ipod, a watcher removes its session's route file when its pid ends. Drawing variants also run libcpprobe.so
+   with CPM_CLEAR=<pid> to clear arrows whose markers still name that pid. */
+int rg_watch_once(void);                                   /* 1 only after successful spawn; 0 = do not publish/draw yet */
 #define RG_KOMBI_MARKER "/dev/shmem/carplaymenu-kombi.shown"
 #define RG_MOST_MARKER "/dev/shmem/carplaymenu-most.shown"
 

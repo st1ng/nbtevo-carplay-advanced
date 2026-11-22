@@ -372,10 +372,27 @@ first in `LD_PRELOAD`; other `write()` calls go to the next library in the chain
     ("Take exit 23B onto I-95" -> "23B"), is `rg_view.exitno` (the KOMBI's street line).
   - `LaneGuidanceInformation` 0x5204: index and lanes (position, status 0 not good / 1 good / 2 preferred, angles, highlight angle
     with 1000 = none); 8 sets of up to 8 lanes, sorted left to right.
-- **Output**: `/var/iap/pps/routeguidance`, PPS-style `key::value` lines, written to `.tmp` and renamed: route_state,
+- **Output**: `/var/iap/pps/routeguidance` -> `routeguidance.carplaymenu.<pid>` in that directory ->
+  `/dev/shmem/carplaymenu-routeguidance.<pid>.<sequence>`. Each RAM snapshot is written and closed completely, then selected by
+  atomically renaming a temporary **symlink in the disk-backed PPS directory** over the session link. QNX 6.5 `/dev/shmem`
+  rejects regular-file `rename()` with `EXDEV` (18); shell `mv` can hide this by copying and unlinking instead. Do not move that
+  rename back into RAM. Readers with an open descriptor retain the previous whole snapshot after its name is unlinked.
+  The PPS-style `key::value` contents are unchanged: route_state,
   dist_to_maneuver(_string, _units), current_road, maneuver_index/type/exit_angle/driving_side/road/junction_*, and lanes
   (`status/highlight/angle,angle;...`, while the iPhone shows them). Every message also goes to `/var/iap/rghook.log` with `debug_log` (without it: `RG route_state <n>` when it changes). The file is
-  removed when mm-ipod starts, so a new session never shows an old route.
+  replaced atomically at mm-ipod initialization by an alias to its initially absent private session link. Ownership is selected before
+  the first guidance message, so an older process publishing late cannot replace a newer session's public link. A watcher in every
+  variant retires its own RAM snapshots and session link after mm-ipod ends, including SIGKILL;
+  the HMI's HUD loop then sees no route and clears its arrow. A late watcher never unlinks a shared path or a newer session's file.
+  RAM targets cannot survive a reboot; `boot.sh` also removes legacy disk-backed route files before HMI and mm-ipod start.
+  The test override `RGHOOK_PPS` puts snapshots at `<override>.<pid>.<sequence>` instead.
+  Publication failures log the operation, path, errno, result and expected byte count; short writes and close failures preserve the
+  previous complete route. Repeated operation/errno pairs are suppressed until the error changes or publication recovers. The first
+  success and recovery are logged without route contents. An initial ownership-claim failure disables publication for that session
+  and preserves the existing public entry; reconnect CarPlay to retry. It is never retried on a later message, which could let an older
+  session steal a newer owner. Fresh HUD reads retry twice (1 ms each); if lookup still fails while the private session alias exists,
+  the worker holds its shown arrow for at most one second of consecutive lookup failures. A successful open resets the budget;
+  removal of that alias by the watcher ends the hold immediately and allows normal clearing.
 - **Start marker after a reroute** (`cur_view`; issue #9, BMW F25 X3: "the first direction after a reroute feels missed"; a
   contributor's change, ghackt 1.2.1, not tried in a car): after a reroute the current list is `[0, 1]` (the start marker, type 11, at
   0 m, and the first real turn) and becomes `[1, 2]` only later, so the start marker was drawn instead of the turn. When the current
@@ -625,14 +642,20 @@ display layer does; it is now shortened to 22, `shortRoad` below).
   The default comes from the installer's probe (`libcpprobe.so`: a TCP connect to 160.48.199.96:30502, closed at once, nothing
   sent): KOMBI found = `kombi`, else `most` (also when the probe gives no answer). The probe cannot see a MOST HUDTerminal, so `both`
   is only available with `--cluster both`. There is one MOST sender either way (the plugin or `librghook-most/-both`, never both).
-- **Left-over arrows**: mm-ipod lives for one CarPlay session, and a session ending with an arrow up would leave it on the cluster.
+- **Disconnect cleanup**: mm-ipod lives for one CarPlay session. Every `librghook` variant starts the watcher on guidance messages,
+  including plain `librghook.so` (the full menu install, whose HMI thread keeps running after mm-ipod ends). Active publication and
+  sender kickoff wait for a successful spawn; concurrent startup is not readiness. A failed spawn is retried on the next guidance message. The shared route path is a symlink: the watcher removes only its session's RAM snapshots and disk links,
+  so it cannot delete a newer session's route. A connected, quiet route has no time-based expiry.
+  The following additional cleanup applies to the variants that draw from mm-ipod itself:
   - While an arrow is shown, `RG_KOMBI_MARKER` (`/dev/shmem/carplaymenu-kombi.shown`) or `RG_MOST_MARKER`
     (`/dev/shmem/carplaymenu-most.shown`) holds mm-ipod's pid.
   - Once per mm-ipod, `rg_watch_once()` (rghook.c) spawns a watcher with `spawnle(P_NOWAITO)`, so it outlives mm-ipod (its environment
-    is minimal, without `LD_PRELOAD`): `while kill -0 <pid>; do sleep 3; done`, then `CPM_CLEAR=<pid> LD_PRELOAD=libcpprobe.so
-    /bin/cat`.
+    is minimal, without `LD_PRELOAD`): `while kill -0 <pid>; do sleep 10; done`, removes the session's snapshots and links, then runs
+    `CPM_CLEAR=<pid> LD_PRELOAD=libcpprobe.so /bin/cat`. PID and file paths are quoted positional arguments, not shell source.
   - The probe clears each marker that **still names that pid**; a newer session's arrow is left alone. For the KOMBI it sends the
     cancel; for MOST it uses its own `hud.h` client (`dsiOpen`, wait up to 8 s for registration and the 82/00 host, `drawClear`).
+  The unchanged probe checks marker ownership before waiting for DSI; rapid-reconnect ownership changes during that wait remain
+  unverified. Session-file isolation is not a guarantee that every direct-sender arrow race is solved.
   - A new KOMBI worker also clears any marker it finds before it draws.
 
 ## Boot, restart and the bootloop guard
@@ -772,7 +795,9 @@ built and checked against the package's layouts only, **untested in a car** (nor
 | `/dev/shmem/carplaymenu-hudcmd` | the HUDTerminal test channel |
 | `/dev/shmem/carplaymenu-kombi.shown`, `-most.shown` | markers: the pid of the mm-ipod with an arrow shown |
 | `/dev/shmem/carplaymenu-restart` | restart flag (no launcher) |
-| `/var/iap/pps/routeguidance` | the iPhone's guidance (librghook) |
+| `/var/iap/pps/routeguidance` | link to the current session's guidance; may remain dangling after disconnect |
+| `/var/iap/pps/routeguidance.carplaymenu.<pid>` | session link, atomically switched between complete RAM snapshots; retired by its watcher |
+| `/dev/shmem/carplaymenu-routeguidance.<pid>.<sequence>` | immutable RAM snapshot; previous snapshot unlinked after replacement; lost at reboot |
 | `/dev/shmem/carplaymenu.log`, `/dev/shmem/cppinch.log`, `/var/iap/rghook.log` | logs: plugin + `boot.sh`; the Connectivity hook; the mm-ipod hook, KOMBI / MOST senders and watcher |
 | `/var/opt/carplay-advanced-backups/` | installer backups (`originals/` kept once) |
 
@@ -783,19 +808,30 @@ built and checked against the package's layouts only, **untested in a car** (nor
 | Test | Covers |
 |---|---|
 | `test_installer.py` | the installer under `sh` and `ksh` in a fake file tree: computer and head-unit halves, checks, backups, rollback, hooks, the HUD-only wrapper, the cluster choice and variants; the HMI scan on made-up HmiMain3D files built from its own patterns (`synth_hmi`), the scanned install; with `CPA_HMI_006` / `CPA_HMI_1703` (the plain HmiMain3D of both builds) the scan of the real builds against `--expect` and the `scan` rows |
-| `test_carplay_bootguard.py` | the real `boot.sh` guard: strikes, safe mode, disable, Restart to apply, a run while the HMI is up |
+| `test_carplay_bootguard.py` | the real `boot.sh` guard: strikes, safe mode, disable, Restart to apply; legacy route and session-link cleanup at boot, preserved during a live HMI/mm-ipod relink or failed process check |
 | `test_hud_shapes.py` | every maneuver picture: convex pieces inside the box, roundabout details, mirroring, lanes; with `MAPBOX_STYLEKIT` set, that `hudglyphs.h` is what the generator makes |
 | `test_hud_handles.py` | `hudhandles.h`: the F54's own set-up gives 1..6 and bar 0x16, another numbering its own, frames 11-13, the kept file's text |
 | `test_hud_init.py` | `hud.h` built for the Mac with the DSI stream stubbed: handles learnt per terminal and drawn on, copies to 82/02 with its handles, the bar hidden, `hud_hide` and C04 on one terminal only, the box fitted to `ImageGetSize` answers, the comma and typographic characters in texts, day / night and `hud_colour_day` |
 | `test_rghook_lanes.py` | `rghook.c` lane decoding into the routeguidance file |
+| `test_hud_route_reader.py` | actual HUD reader: bounded open retries, live-session hold, hold-to-disconnect clearing, legacy/dangling links, concurrent fresh reads during snapshot replacement |
+| `test_rghook_session.py` | actual decoder and watcher (QNX spawnle mapped to host posix_spawn): RAM-file rename rejected with EXDEV, open/write/close/rename/symlink fault diagnostics and recovery, whole snapshots for open readers, SIGKILL/normal-exit cleanup, idle connected route, late old writer/watcher vs. new session, initialization before first guidance, failed claim isolation, publication-boundary SIGKILL, failed/concurrent watcher spawn, RAM loss, spawn retry, short-write preservation; paths with shell metacharacters |
 | `test_rghook_reroute.py` | `rghook.c` `cur_view`: the start marker skipped after a reroute, the distance in each unit, `keep_start_marker`, the cases left as before |
 | `test_builds.py` | `kBuilds` and `src/tilt_*.json` without firmware: the same 19 places and new code in every build, every branch lands where meant, the 1607 entry and its installer rows; with `CPA_HMI_1607` (the plain HmiMain3D of 1607 Build 153) every 1607 value against the file |
 | `test_layout.py` | `pbwpatch.h` and `iniwide.h`: synthetic layouts and carplay.ini files; with `CPA_LAYOUTS` (a folder with the package's files, e.g. IDEmu's `cache/bmw-layouts/<build>/...`) the real MINI and common layouts of both builds and carplay.ini, outputs pinned by SHA-256 |
 | `test_kombi.py` | `kombi.h` against a fake KOMBI on 127.0.0.1: headers, sequences, rejection, cookies, reconnect, probe, the clear's pid check, mappings, the street (`shortRoad`, exit number, "0 m"), the redraw rule for street changes |
 | `test_rgkombi.py` | `librghook-kombi` end to end: iAP2 messages in, KOMBI frames out, marker, switch off, left-over arrow, BMW-route yield (a log file in place of `sloginfo`), the exit number from the description and from ExitInfo, `kombi_road_max` |
 
-Not covered on the Mac: anything that needs the HMI, Connectivity or MOST (`hud.h`'s real DSI client, the hooks, the `spawn` of
-`sloginfo`).
+Not covered by host tests: the real HMI/Connectivity/iAP hooks and MOST DSI rendering. Prior native QNX 6.5 validation of the earlier `5a2a44f` payloads verified RAM
+publication, an open reader retaining its old complete snapshot, watcher cleanup after process exit, and `dlopen(RTLD_NOW)` of all
+four rebuilt variants in an isolated emulator with networking disabled. The filesystem probe reproduced `EXDEV` (18) for RAM-file
+`rename()`; only the session symlink in the disk-backed PPS directory is renamed.
+
+On 22 November 2026 the earlier `5a2a44f` `boot.sh` and four rghook payloads were read-back verified on a BMW F30/6WA with windscreen HUD,
+ID5 Build 66. The exercised configuration was the full-menu/MOST path using plain `librghook.so` and the existing HMI renderer.
+Disconnecting only CarPlay retired its publication after about one 10-second watcher poll; the already-connected Android Auto
+session regained the HUD with the same PID and USB session, 27/27 draw replies and no AAD HUD errors/timeouts. This does not verify
+all sender variants, rapid reconnect, reboot or automatic main-screen/input handover. The subsequent initialization/watcher/reader
+review fixes have host regression and ABI checks; they have not been installed or tested on the vehicle. Those remain separate checks.
 
 ## Status: verified and open
 

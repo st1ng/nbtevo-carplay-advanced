@@ -56,7 +56,7 @@ class RgHookReroute(unittest.TestCase):
         args = [str(self.exe)]
         for mid, payload in msgs:
             args += ['%x' % mid, payload.hex()]
-        subprocess.run(args, check=True, env=dict(os.environ, RGHOOK_PPS=str(pps), RGHOOK_CFG=str(self.cfg)))
+        subprocess.run(args, check=True, env=dict(os.environ, RGHOOK_PPS=str(pps), RGHOOK_CFG=str(self.cfg), RGHOOK_NO_WATCH='1'))
         return dict(l.split(':', 2)[0::2] for l in pps.read_text().splitlines() if l.count(':') >= 2)
 
     def reroute(self, units=2, keep=False, step=160):

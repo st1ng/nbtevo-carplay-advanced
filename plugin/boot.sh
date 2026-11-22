@@ -17,6 +17,13 @@ log() { echo "CarPlayMenu: boot.sh: $*" >> $LOG; }
 on=; for f in fullscreen remap_knob remap_touchpad two_finger media_gestures hud_guidance; do [ -f $D/$f ] && on="$on $f"; done
 log "start, switches in $D:${on:- none}"
 
+# Older versions kept the route on disk. At boot, before either reader or writer starts, retire that legacy file too.
+if route_hmi=$(pidin -p HmiMain3D 2>/dev/null) && route_ipod=$(pidin -p mm-ipod 2>/dev/null) &&
+   [ "$(echo "$route_hmi" | grep -c HmiMain3D)" = 0 ] && [ "$(echo "$route_ipod" | grep -c mm-ipod)" = 0 ]; then
+  cpa_route="${CPM_ROUTE_PPS:-/fs/sda1/iap/pps/routeguidance}"
+  rm -f "$cpa_route" "$cpa_route.tmp" "$cpa_route".carplaymenu.*
+fi
+
 # Bootloop guard. This script writes $D/boot_pending at every boot; the plugin deletes it once the HMI has run with it for a minute
 # (kStableS in cpm.cpp), and "Restart to apply" deletes it before its reboot. Still there at the next boot = that boot failed (an HMI
 # crash and watchdog reset, or a power cut within the first minute). $D/boot_strikes counts failed boots in a row:

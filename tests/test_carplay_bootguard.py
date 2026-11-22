@@ -22,20 +22,22 @@ class BootGuard(unittest.TestCase):
         self.pl.mkdir(parents=True)
         (self.pl / 'CarPlayMenu.manifest').write_text('m')
         self.log = self.tmp / 'log'
+        self.pps = self.tmp / 'routeguidance'
 
     def tearDown(self):
         shutil.rmtree(self.tmp)
 
-    def boot(self, good=False, hmi_running=False):
+    def boot(self, good=False, hmi_running=False, mmipod_running=False, pidin_fails=False):
         """One boot: boot.sh, then (good) the plugin deleting boot_pending after its minute. hmi_running: a fake pidin that lists
         HmiMain3D (boot.sh run by the installer on a running unit)."""
-        env = dict(os.environ, CPM_DIR=str(self.d), CPM_PLUGIN_DIR=str(self.pl), CPM_LOG=str(self.log))
-        if hmi_running:
-            bin_ = self.tmp / 'bin'
-            bin_.mkdir(exist_ok=True)
-            (bin_ / 'pidin').write_text('#!/bin/sh\necho "  12345   1 /opt/hmi/bin/HmiMain3D  10r RUNNING"\n')
-            (bin_ / 'pidin').chmod(0o755)
-            env['PATH'] = f'{bin_}:{env["PATH"]}'
+        env = dict(os.environ, CPM_DIR=str(self.d), CPM_PLUGIN_DIR=str(self.pl), CPM_LOG=str(self.log), CPM_ROUTE_PPS=str(self.pps))
+        bin_ = self.tmp / 'bin'
+        bin_.mkdir(exist_ok=True)
+        body = 'exit 1\n' if pidin_fails else 'case "$2" in\nHmiMain3D) %s ;;\nmm-ipod) %s ;;\nesac\n' % (
+            'echo "12345 HmiMain3D"' if hmi_running else ':', 'echo "54321 mm-ipod"' if mmipod_running else ':')
+        (bin_ / 'pidin').write_text('#!/bin/sh\n' + body)
+        (bin_ / 'pidin').chmod(0o755)
+        env['PATH'] = f'{bin_}:{env["PATH"]}'
         subprocess.run([KSH, str(BOOT)], env=env, check=True)
         if good:
             (self.d / 'boot_pending').unlink(missing_ok=True)
@@ -119,6 +121,36 @@ class BootGuard(unittest.TestCase):
         self.boot()
         self.boot(good=True)
         self.assertEqual(self.strikes(), 1)
+
+    def test_boot_removes_legacy_route(self):
+        self.pps.write_text('@routeguidance\nroute_state:n:1\n')
+        self.boot()
+        self.assertFalse(self.pps.exists())
+
+    def test_session_links_removed_only_before_processes_start(self):
+        link = Path(str(self.pps) + '.carplaymenu.123')
+        link.symlink_to('/nonexistent/old-ram-object')
+        self.boot(mmipod_running=True)
+        self.assertTrue(link.is_symlink())
+        self.boot(pidin_fails=True)
+        self.assertTrue(link.is_symlink())
+        self.boot()
+        self.assertFalse(link.is_symlink())
+
+    def test_live_relink_keeps_route(self):
+        self.pps.write_text('@routeguidance\nroute_state:n:1\n')
+        self.boot(hmi_running=True)
+        self.assertIn('route_state:n:1', self.pps.read_text())
+
+    def test_relink_with_mm_ipod_keeps_route(self):
+        self.pps.write_text('@routeguidance\nroute_state:n:1\n')
+        self.boot(mmipod_running=True)
+        self.assertIn('route_state:n:1', self.pps.read_text())
+
+    def test_unknown_process_state_keeps_route(self):
+        self.pps.write_text('@routeguidance\nroute_state:n:1\n')
+        self.boot(pidin_fails=True)
+        self.assertIn('route_state:n:1', self.pps.read_text())
 
 
 if __name__ == '__main__':

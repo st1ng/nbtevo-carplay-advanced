@@ -32,6 +32,7 @@ void *dlopen(const char *, int);
 void *dlsym(void *, const char *);
 int pthread_create(int *, const void *, void *(*)(void *), void *);
 int usleep(unsigned);
+long readlink(const char *, char *, __SIZE_TYPE__);
 int sched_yield(void);
 void *calloc(__SIZE_TYPE__, __SIZE_TYPE__);
 struct hud_timespec {
@@ -986,11 +987,39 @@ void copyS(char *d, u32 cap, const char *s) {
 }
 bool g_noFile;  // no file: no iPhone session with guidance
 bool readGuide(Guide &g) {
+  static bool lookupFailed;
+  static u32 lookupFailedAt;
   memset(&g, 0, sizeof g);
   int fd = open(kPps, 0);
+  // A fresh lookup can race replacement of the session symlink and retirement of its old RAM snapshot.
+  for (unsigned retry = 0; fd < 0 && retry < 2; retry++) {
+    usleep(1000);
+    fd = open(kPps, 0);
+  }
   g_noFile = fd < 0;
-  if (fd < 0)
+  if (fd < 0) {
+    u32 now = nowMs();
+    if (!lookupFailed) {
+      lookupFailed = true;
+      lookupFailedAt = now;
+    }
+    if (now - lookupFailedAt >= 1000)
+      return false;
+    // The private alias survives rotations; limit the hold too, in case its RAM target is permanently missing.
+    char session[256], snapshot[256];
+    long n = readlink(kPps, session, sizeof session);
+    if (n > 0 && n < (long)sizeof session && session[0] == '/') {
+      session[n] = 0;
+      n = readlink(session, snapshot, sizeof snapshot);
+      if (n > 0 && n < (long)sizeof snapshot && snapshot[0] == '/') {
+        g_noFile = false;
+        g.hold = true;
+        return true;
+      }
+    }
     return false;
+  }
+  lookupFailed = false;
   char b[2048];
   long n = read(fd, b, sizeof b - 1);
   close(fd);

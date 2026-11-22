@@ -37,6 +37,7 @@ static int hexv(char c) { return c >= '0' && c <= '9' ? c - '0' : c - 'a' + 10; 
 int main(void) {             /* stdin: "msg <id hex> <payload hex>", "sleep <ms>" */
   r_open = mac_open; r_write = (long (*)(int, const void *, size_t))mac_write; r_read = (long (*)(int, void *, size_t))mac_read;
   r_close = close; r_unlink = unlink; r_rename = rename; inited = 1;
+  rg_clear();
   char line[8192];
   while (fgets(line, sizeof line, __stdinp)) {
     if (!strncmp(line, "sleep ", 6)) usleep((unsigned)strtol(line + 6, 0, 10) * 1000);
