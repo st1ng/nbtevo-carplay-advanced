@@ -191,6 +191,10 @@ the head unit's libraries. `plugin/` is committed prebuilt, so installing needs 
 The tests run the real code on the computer: the menu's file patches, the HUD pictures, the iAP2 decoder, the KOMBI client against a
 fake KOMBI, and the installer against a simulated head unit (its shell, file system and tools).
 
+For the glyph-generation check, set `MAPBOX_STYLEKIT` to Mapbox Navigation iOS v0.40.0's `ManeuversStyleKit.swift`, with
+`LanesStyleKit.swift` in the same directory. Firmware-reference checks need the private inputs listed in `AGENTS.md`; without
+them those checks are reported as skipped. No BMW firmware or private vehicle data belongs in this repository.
+
 | Folder | What |
 |---|---|
 | `src/` | The plugin and its libraries (C / freestanding C++) |

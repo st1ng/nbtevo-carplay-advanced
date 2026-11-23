@@ -432,11 +432,18 @@ double buffers. The HUD shows what the cluster's guidance shows. `hud.h` does th
     Why: the F25 X3 refuses texts on 2/3/4 and takes them on 0x0c/0x12/0x0f (issue #9), its buffer 5 is 0 x 0.
   - **The frame's bar** (known from the set-up only) is hidden with every picture: we never set its value (an F30 6WB showed it
     over the speed, PR #13).
-  - **Picture size** (`measureBox`, at start and after the handles changed, not while the navigation guides): `ImageGetSize` on
-    picture A in the F54 form `[h]` and the 6WB form `[h][01]` (one is refused), 2 s. `fitBox` (ghackt's rule): 170 x 120 or more
+  - **Picture size**: `ImageGetSize` on picture A in the F54 form `[h]` and the 6WB form `[h][01]` (one is refused). Up to five
+    attempts per size-recovery series, with 2 s response windows and pauses of 1, 2, 5 and 10 s. Read-only retries can run while a
+    CarPlay picture is shown; BMW navigation retains priority. A usable answer ends polling. A late usable answer to the current
+    host/terminal/picture is applied by the drawing worker, including after the attempt budget. Anonymous errors carry no picture
+    handle, so they remain diagnostic and cannot terminate a size request. The interface has no unique transaction ID: replies to
+    repeated requests with the same host/terminal/picture cannot be distinguished by generation. `fitBox` (ghackt's rule): 170 x 120 or more
     = the 6WA box; smaller = a square of 25/36 of the shorter side (<= 100), centred across, two thirds down (120 x 72 -> (35,15)-(85,65),
     the MINI box, drawn by halving as before; 126 x 77 -> (36,16)-(89,69)); 0 x 0 (not an instance yet) or no answer: no change.
     Other boxes are mapped linearly (`hudshapes.h` `toBox`, division by the constant 100). Not on the 6WB plane, not with a switch.
+    A recovered size invalidates the cached maneuver and both blink pictures so the current direction is redrawn at the new size.
+    A new primary map or an observed change of host/terminal/picture starts a new series; a phone reconnect or route update alone
+    does not replenish the budget. Persistent refusal still leaves the previous box: no dimensions are guessed from the car model.
   - **Terminals**: drawn on 82/00, or 82/02 when the registry has no 82/00. Once the navigation is seen setting up the other one
     (or its map is kept), every drawing call also goes there with its handles (`call`: the first handle, both of 20E, translated by
     the two maps; not C04, not `hud_hide`). On the MINI, 82/00 is the HUD ("FB_HUD_Terminal_hud", with C01 HUDSelection / C02
@@ -784,9 +791,10 @@ built and checked against the package's layouts only, **untested in a car** (nor
 |---|---|
 | `test_installer.py` | the installer under `sh` and `ksh` in a fake file tree: computer and head-unit halves, checks, backups, rollback, hooks, the HUD-only wrapper, the cluster choice and variants; the HMI scan on made-up HmiMain3D files built from its own patterns (`synth_hmi`), the scanned install; with `CPA_HMI_006` / `CPA_HMI_1703` (the plain HmiMain3D of both builds) the scan of the real builds against `--expect` and the `scan` rows |
 | `test_carplay_bootguard.py` | the real `boot.sh` guard: strikes, safe mode, disable, Restart to apply, a run while the HMI is up |
-| `test_hud_shapes.py` | every maneuver picture: convex pieces inside the box, roundabout details, mirroring, lanes; with `MAPBOX_STYLEKIT` set, that `hudglyphs.h` is what the generator makes |
+| `test_hud_shapes.py` | every maneuver picture: convex pieces inside the box, roundabout details, mirroring, lanes; with `MAPBOX_STYLEKIT` pointing to v0.40.0's `ManeuversStyleKit.swift` beside `LanesStyleKit.swift`, that `hudglyphs.h` is what the generator makes |
 | `test_hud_handles.py` | `hudhandles.h`: the F54's own set-up gives 1..6 and bar 0x16, another numbering its own, frames 11-13, the kept file's text |
 | `test_hud_init.py` | `hud.h` built for the Mac with the DSI stream stubbed: handles learnt per terminal and drawn on, copies to 82/02 with its handles, the bar hidden, `hud_hide` and C04 on one terminal only, the box fitted to `ImageGetSize` answers, the comma and typographic characters in texts, day / night and `hud_colour_day` |
+| `test_hud_size_recovery.py` | deterministic clock and MOST replies: five attempts, retry gaps and clock wrap, late replies after exhaustion, malformed/wrong-identity replies, anonymous errors, map changes, overrides, and the real worker recovering an active route with both blink pictures redrawn |
 | `test_rghook_lanes.py` | `rghook.c` lane decoding into the routeguidance file |
 | `test_rghook_reroute.py` | `rghook.c` `cur_view`: the start marker skipped after a reroute, the distance in each unit, `keep_start_marker`, the cases left as before |
 | `test_builds.py` | `kBuilds` and `src/tilt_*.json` without firmware: the same 19 places and new code in every build, every branch lands where meant, the 1607 entry and its installer rows; with `CPA_HMI_1607` (the plain HmiMain3D of 1607 Build 153) every 1607 value against the file |

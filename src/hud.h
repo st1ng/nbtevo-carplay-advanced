@@ -126,9 +126,31 @@ inline int slotOf(u8 inst) {
 // the layout probe (detectLayout): ImageGetSize answered for handle 5 (the 6WA picture) / 0x1F (the 6WB plane); the BMW navigation
 // seen drawing on a 6WB handle (0x18..0x35)
 volatile int g_size5, g_size1f, g_seen6wb;
-// the picture buffer's size (measureBox): the handle asked, its answer (w, h) and the answers / refusals counted
-volatile u16 g_askH, g_askW, g_askHt;
-volatile int g_askOk, g_askErr;
+// The worker publishes a request identity; the single DSI callback publishes replies without waiting or drawing.
+volatile u32 g_sizeGeneration, g_sizeKey, g_sizeInst;
+struct {
+  volatile u32 seq, generation, dimensions;
+} g_sizeReply;
+inline u32 sizeLoad(const volatile u32 &v) {
+  return __atomic_load_n(&v, __ATOMIC_ACQUIRE);
+}
+inline void sizeStore(volatile u32 &v, u32 n) {
+  __atomic_store_n(&v, n, __ATOMIC_RELEASE);
+}
+inline bool usableSize(u32 w, u32 h) {
+  return w >= 24 && h >= 24 && w <= 1023 && h <= 1023;
+}
+void recordSize(u16 src, u8 inst, u16 handle, u16 w, u16 h) {
+  u32 generation = sizeLoad(g_sizeGeneration);
+  if (!generation || sizeLoad(g_sizeKey) != ((u32)src << 16 | handle) || sizeLoad(g_sizeInst) != inst ||
+      generation != sizeLoad(g_sizeGeneration))
+    return;
+  // A sequence protects the two-word mailbox while the worker reads it; the callback never takes a lock.
+  __atomic_fetch_add(&g_sizeReply.seq, 1, __ATOMIC_ACQ_REL);
+  sizeStore(g_sizeReply.generation, generation);
+  sizeStore(g_sizeReply.dimensions, (u32)w << 16 | h);
+  __atomic_fetch_add(&g_sizeReply.seq, 1, __ATOMIC_RELEASE);
+}
 // the handles learnt from the navigation's set-up, per terminal (hudhandles.h): g_learnt[slot] is a complete map not yet used
 hudh::Learner g_learn[2];
 hudh::Map g_learntMap[2];
@@ -378,21 +400,19 @@ void onData(void *, void *is) {
     u32 varTag = rd32(p + 4), varVal = rd32(p + 8);
     // ImageGetSize answers: [handle][w][h] (F54, 6 bytes) or [handle][01][w][h] (6WB, 7 bytes), sizes u16 big-endian. The F54 also
     // answers for handles it does not have, with 0 x 0: only a real size counts. Only the terminal drawn on.
-    if (fkt == 0xC04 && dst == g_self && src != g_self && inst == g_inst) {
-      if (op == kOpResultAck && (an == 6 || an == 7)) {
+    if (fkt == 0xC04 && dst == g_self && src == g_host && inst == g_inst) {
+      if (op == kOpResultAck && (an == 6 || (an == 7 && p[34] == 1))) {
         const u8 *a = p + 32 + (an == 7 ? 3 : 2);
         u16 h = (u16)(p[32] << 8 | p[33]), w = (u16)(a[0] << 8 | a[1]), ht = (u16)(a[2] << 8 | a[3]);
-        if (w && ht && h == 5)
-          g_size5 = 1;
-        if (w && ht && h == 0x1f)
-          g_size1f = 1;
-        if (h == g_askH) {
-          g_askW = w;
-          g_askHt = ht;
-          g_askOk = 1;
+        if (usableSize(w, ht)) {
+          if (h == 5)
+            g_size5 = 1;
+          if (h == 0x1f)
+            g_size1f = 1;
+          recordSize(src, inst, h, w, ht);
         }
-      } else if (op == 0xF || op == 9)
-        g_askErr++;
+      }
+      // Native errors can be only [05], with no handle/request ID. Logged below; they cannot complete this request.
     }
     dbgMsg(src == g_self ? "echo" : dst == g_self ? "in  " : "seen", src, dst, fkt, op, p, len);
     bool normal = varTag == 2 && !(varVal >= 4 && varVal <= 9);  // not the send status of a message of ours
@@ -1360,7 +1380,9 @@ void textOverride() {
     logf1("CarPlayMenu: HUD: texts on street %u, distance %u, unit %u (switch hud_text_handles)", hStreet, hDist, hUnit);
   }
 }
-bool g_measureDue = true;  // the picture buffer's size is to be asked (at start, and after the handles changed)
+bool g_measureDue = true;  // a new bounded series, at start and after the primary map changes
+bool g_sizeWaiting, g_sizeDone;
+u32 g_sizeAttempts, g_sizeDeadline, g_sizeNext, g_sizeSerial, g_sizeReplySeen;
 void drawClear();
 // the terminal drawn on gets these handles; what is on show is cleared first (on the old ones) and drawn again on the new ones
 void useMap(const hudh::Map &m, const char *why) {
@@ -1477,7 +1499,7 @@ void fitBox(u32 w, u32 h) {
       g_log("CarPlayMenu: HUD: the picture buffer is 0 x 0 (not created, or not a picture here): the box stays");
     return;
   }
-  if (w < 24 || h < 24 || w > 1023 || h > 1023) {
+  if (!usableSize(w, h)) {
     logf1("CarPlayMenu: HUD: picture buffer %u x %u: not used, the box stays", w, h);
     return;
   }
@@ -1500,28 +1522,75 @@ void fitBox(u32 w, u32 h) {
   snprintf(m, sizeof m, "fitted to the picture buffer, %u x %u", w, h);
   logBox(m);
 }
-// ImageGetSize on the picture buffer, in the F54's form [handle] and the 6WB's [handle][01] (a cluster refuses the form it does not
-// take); 2 s for an answer. A switch's box and the 6WB plane stay as they are.
+bool applyMeasuredSize() {
+  u32 seq = sizeLoad(g_sizeReply.seq);
+  if ((seq & 1) || seq == g_sizeReplySeen)
+    return false;
+  u32 generation = sizeLoad(g_sizeReply.generation), dimensions = sizeLoad(g_sizeReply.dimensions);
+  if (seq != sizeLoad(g_sizeReply.seq))
+    return false;
+  g_sizeReplySeen = seq;
+  if (!generation || generation != sizeLoad(g_sizeGeneration) || sizeLoad(g_sizeKey) != ((u32)g_host << 16 | hBufA) ||
+      sizeLoad(g_sizeInst) != g_inst)
+    return false;
+  g_sizeDone = true;
+  g_sizeWaiting = false;
+  sizeStore(g_sizeGeneration, 0);
+  u32 w = dimensions >> 16, h = dimensions & 0xffff;
+  logf1("CarPlayMenu: HUD: picture buffer %u is %u x %u", hBufA, w, h);
+  if (!g_boxFixed && !g_6wb) {
+    fitBox(w, h);
+    if (g_shown)
+      drawClear();  // both blink buffers and the unchanged-maneuver cache must be redrawn with the new box
+  }
+  return true;
+}
+// Each worker tick advances ImageGetSize without waiting: five 2 s windows, separated by 1/2/5/10 s. Late replies remain valid
+// after a window or the budget ends; only a new primary map/terminal identity retires them. There is no wire transaction ID.
 void measureBox() {
-  g_measureDue = false;
-  g_askH = hBufA;
-  g_askOk = 0;
-  g_askErr = 0;
+  u32 now = nowMs(), key = (u32)g_host << 16 | hBufA;
+  if (g_measureDue || key != sizeLoad(g_sizeKey) || g_inst != sizeLoad(g_sizeInst)) {
+    sizeStore(g_sizeGeneration, 0);
+    sizeStore(g_sizeKey, key);
+    sizeStore(g_sizeInst, g_inst);
+    g_sizeAttempts = 0;
+    g_sizeWaiting = g_sizeDone = false;
+    g_sizeNext = now;
+    g_measureDue = false;
+  }
+  if (applyMeasuredSize() || g_sizeDone)
+    return;
+  if (g_boxFixed || g_6wb) {
+    g_sizeDone = true;
+    return;
+  }
+  if (g_sizeWaiting) {
+    if ((int)(now - g_sizeDeadline) < 0)
+      return;
+    g_sizeWaiting = false;
+    logf1("CarPlayMenu: HUD: no usable answer for picture buffer %u's size (attempt %u/5)", hBufA, g_sizeAttempts);
+    if (g_sizeAttempts == 5) {
+      g_sizeDone = true;
+      return;
+    }
+    const u32 gaps[] = { 1000, 2000, 5000, 10000 };
+    g_sizeNext = now + gaps[g_sizeAttempts - 1];
+  }
+  if (!g_registered || !g_host || (int)(now - g_sizeNext) < 0)
+    return;
+  g_sizeAttempts++;
+  g_sizeWaiting = true;
+  g_sizeDeadline = now + 2000;
+  if (g_sizeAttempts == 1) {
+    if (!++g_sizeSerial)
+      ++g_sizeSerial;
+    sizeStore(g_sizeGeneration, g_sizeSerial);
+  }
+  logf1("CarPlayMenu: HUD: asking picture buffer %u's size (attempt %u/5)", hBufA, g_sizeAttempts);
   const u8 f1[] = { (u8)(hBufA >> 8), (u8)hBufA }, f2[] = { (u8)(hBufA >> 8), (u8)hBufA, 1 };
   call(0xC04, f1, 2);
   call(0xC04, f2, 3);
-  for (int i = 0; i < 40 && !g_askOk && g_askErr < 2; i++)
-    usleep(50000);
-  if (!g_askOk) {
-    logf1(g_askErr ? "CarPlayMenu: HUD: the picture buffer %u's size was refused: the box stays (hud_box sets one)"
-                   : "CarPlayMenu: HUD: no answer for the picture buffer %u's size: the box stays (hud_box sets one)",
-          hBufA);
-    return;
-  }
-  logf1("CarPlayMenu: HUD: picture buffer %u is %u x %u", hBufA, g_askW, g_askHt);
-  if (g_boxFixed || g_6wb)
-    return;
-  fitBox(g_askW, g_askHt);
+  applyMeasuredSize();
 }
 // the maps kept from an earlier start (also for the installer's clear of a left-over arrow, probe.cpp)
 void loadKept() {
@@ -1564,7 +1633,7 @@ void *worker(void *) {
       initTerminal();
     }
     takeLearnt();  // the navigation's set-up, if it came since
-    if (g_measureDue && !g_shown && !(g_navMs && nowMs() - g_navMs < 5000))
+    if (!(g_navMs && nowMs() - g_navMs < 5000))
       measureBox();
     if (g_night != lastNight) {  // day / night: an effect on show is drawn again in its colour
       lastNight = g_night;
