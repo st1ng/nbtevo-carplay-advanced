@@ -126,6 +126,12 @@ inline int slotOf(u8 inst) {
 // the layout probe (detectLayout): ImageGetSize answered for handle 5 (the 6WA picture) / 0x1F (the 6WB plane); the BMW navigation
 // seen drawing on a 6WB handle (0x18..0x35)
 volatile int g_size5, g_size1f, g_seen6wb;
+// Only a positive reply on the current primary terminal identifies its native compact bars.
+volatile u32 g_nativePicture5Size, g_nativeBarsEpoch;
+void resetNativeBars() {
+  __atomic_store_n(&g_nativePicture5Size, 0, __ATOMIC_RELEASE);
+  __atomic_fetch_add(&g_nativeBarsEpoch, 1, __ATOMIC_RELEASE);
+}
 // the picture buffer's size (measureBox): the handle asked, its answer (w, h) and the answers / refusals counted
 volatile u16 g_askH, g_askW, g_askHt;
 volatile int g_askOk, g_askErr;
@@ -202,6 +208,7 @@ bool request(u32 id, const Buf &p) {  // only with the client connected; seriali
 }
 
 void onAttached(void *) {
+  resetNativeBars();
   g_attached = 1;
   g_registered = 0;
   Buf p;
@@ -221,6 +228,7 @@ void onAttached(void *) {
     g_log("CarPlayMenu: HUD: attached to MOSTSubSystem.DSYSMOSTServer, registering");
 }
 void onDetached(void *) {
+  resetNativeBars();
   g_attached = 0;
   g_registered = 0;
   if (g_log)
@@ -301,6 +309,7 @@ void onData(void *, void *is) {
   if (!p)
     return;
   if (id == kInfoClientResponse && len >= 6) {
+    resetNativeBars();
     g_client = rd32(p);
     g_self = rd16(p + 4);
     if (g_client == 0xffffffffu) {
@@ -335,9 +344,12 @@ void onData(void *, void *is) {
     }
     g_hostOf[0] = t0;
     g_hostOf[1] = t2;
+    u8 oldInst = g_inst;
     if (!g_instFixed && cnt)  // no 82/00 but an 82/02: that one is drawn on
       g_inst = (u8)(!t0 && t2 ? 2 : 0);
     host = g_hostOf[slotOf(g_inst) < 0 ? 0 : slotOf(g_inst)];
+    if (host != g_host || oldInst != g_inst)
+      resetNativeBars();
     if (host != g_host) {
       g_host = host;
       logf1("CarPlayMenu: HUD: drawing on HUDTerminal 82/%02x at device %04x", g_inst, host);
@@ -382,6 +394,8 @@ void onData(void *, void *is) {
       if (op == kOpResultAck && (an == 6 || an == 7)) {
         const u8 *a = p + 32 + (an == 7 ? 3 : 2);
         u16 h = (u16)(p[32] << 8 | p[33]), w = (u16)(a[0] << 8 | a[1]), ht = (u16)(a[2] << 8 | a[3]);
+        if (src == g_host && h == 5 && (an == 6 || p[34] == 1) && w >= 24 && ht >= 24 && w <= 1023 && ht <= 1023)
+          __atomic_store_n(&g_nativePicture5Size, (u32)w << 16 | ht, __ATOMIC_RELEASE);
         if (w && ht && h == 5)
           g_size5 = 1;
         if (w && ht && h == 0x1f)
@@ -732,7 +746,8 @@ const u8 kFill = 4;  // the BMW navigation's colour on 6WA, F54 and 6WB alike (J
 bool g_6wb;
 
 // a MOST message through DSYSMOSTServer: destination, FBlock, instance, function, OpType, data
-bool send(u16 dst, u8 fb, u8 inst, u16 fkt, u8 op, const u8 *d, u32 n) {
+bool compactNativeBars();
+bool send(u16 dst, u8 fb, u8 inst, u16 fkt, u8 op, const u8 *d, u32 n, bool ownHud = false) {
   if (!g_registered || !dst)
     return false;
   Buf p;
@@ -750,7 +765,17 @@ bool send(u16 dst, u8 fb, u8 inst, u16 fkt, u8 op, const u8 *d, u32 n) {
   p.u32_(n);
   p.bytes(d, n);
   lock();
+  if (ownHud && (!g_registered || dst != g_host || inst != g_inst || !compactNativeBars() ||
+                 (g_navMs && (int)(nowMs() - g_navMs) < 5000))) {
+    unlock();
+    return false;
+  }
+  u32 recent = g_recentN % 32;
+  if (ownHud)
+    noteSent(fkt, d, n);
   bool ok = request(kReqProcessMessage, p);
+  if (ownHud && !ok)
+    g_recent[recent].t = 0;
   unlock();
   return ok;
 }
@@ -1193,6 +1218,11 @@ void drawPicture(u16 buf, const Guide &g, u32 level, bool high) {
     }
   }
 }
+// The compact HUD's native bars overlay the speed when no navigation set-up supplies their handles (PR #13).
+bool compactNativeBars() {
+  return !g_6wb && __atomic_load_n(&g_nativePicture5Size, __ATOMIC_ACQUIRE) == (126u << 16 | 77) && hFrame == 1 &&
+         hStreet == 2 && hDist == 3 && hUnit == 4 && hBufA == 5 && hBufB == 6 && (!hBar || hBar == 0x15 || hBar == 0x16);
+}
 void drawManeuver(const Guide &g, const char *dn, const char *du, u32 level = 0) {
   u16 hidden = otherBuf(g_visible);
   drawPicture(hidden, g, level, false);
@@ -1209,6 +1239,15 @@ void drawManeuver(const Guide &g, const char *dn, const char *du, u32 level = 0)
   setText(hDist, dn);
   setText(hUnit, du);
   callHB(kSetVisibility, hFrame, 1);
+  if (compactNativeBars()) {
+    for (u8 h = 0x15; h <= 0x16; h++) {
+      const u8 d[] = { 0, h, 0 };
+      // Primary only, with ownership checked under the send lock; these numbers are not mirror roles.
+      if (send(g_host, kFBlock, g_inst, kSetVisibility, kOpStartResultAck, d, 3, true))
+        dbgOut(kSetVisibility, d, 3);
+      usleep(20000);
+    }
+  }
   // The frame's distance bar (its handle known from the set-up): we never set its value, so it would show whatever the cluster has
   // (an F30 6WB showed a bar over the speed, PR #13): hidden, on both terminals.
   if (hBar)
@@ -1366,6 +1405,8 @@ void drawClear();
 void useMap(const hudh::Map &m, const char *why) {
   if (g_shown)
     drawClear();
+  if (m.bufA != hBufA || m.bufB != hBufB)
+    resetNativeBars();
   hFrame = m.frame;
   hStreet = m.street;
   hDist = m.dist;
@@ -1548,6 +1589,8 @@ void *worker(void *) {
   bool probed = false;
   u32 dbgTick = 0;
   int lastNight = -1;
+  bool nativeBars = false;
+  u32 nativeEpoch = __atomic_load_n(&g_nativeBarsEpoch, __ATOMIC_ACQUIRE);
   bool kombi = kombiOnly();
   if (kombi && g_log)
     g_log("CarPlayMenu: HUD: cluster 'kombi': the directions go to the KOMBI from librghook-kombi.so, nothing drawn on MOST");
@@ -1614,6 +1657,15 @@ void *worker(void *) {
     Guide g;
     bool got = g_enabled && readGuide(g);
     bool have = got && g.active;
+    bool bars = compactNativeBars();
+    u32 epoch = __atomic_load_n(&g_nativeBarsEpoch, __ATOMIC_ACQUIRE);
+    if (have && (bars != nativeBars || (bars && epoch != nativeEpoch))) {
+      nativeBars = bars;
+      nativeEpoch = epoch;
+      g_lastType = ~0u;  // a late reply also redraws an unchanged maneuver with a manually fixed picture box
+      g_blinking = false;
+      g_level = ~0u;
+    }
     if (!have && got && g.hold && g_shown)
       continue;
     if (!have) {

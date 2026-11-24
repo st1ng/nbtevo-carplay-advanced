@@ -432,6 +432,10 @@ double buffers. The HUD shows what the cluster's guidance shows. `hud.h` does th
     Why: the F25 X3 refuses texts on 2/3/4 and takes them on 0x0c/0x12/0x0f (issue #9), its buffer 5 is 0 x 0.
   - **The frame's bar** (known from the set-up only) is hidden with every picture: we never set its value (an F30 6WB showed it
     over the speed, PR #13).
+    With the measured 126 x 77 buffer and default 1/2/3/4/5/6 map, the primary terminal's native bars 0x15/0x16 are also hidden
+    when no set-up supplied them. Manual picture boxes do not disable this measured-profile fallback. Registration, terminal or
+    picture identity changes discard its measurement; unknown maps and other terminals are not guessed. Its two extra commands
+    recheck ownership under the send lock, including after a callback between them. No additional size requests are sent.
   - **Picture size** (`measureBox`, at start and after the handles changed, not while the navigation guides): `ImageGetSize` on
     picture A in the F54 form `[h]` and the 6WB form `[h][01]` (one is refused), 2 s. `fitBox` (ghackt's rule): 170 x 120 or more
     = the 6WA box; smaller = a square of 25/36 of the shorter side (<= 100), centred across, two thirds down (120 x 72 -> (35,15)-(85,65),
@@ -787,6 +791,7 @@ built and checked against the package's layouts only, **untested in a car** (nor
 | `test_hud_shapes.py` | every maneuver picture: convex pieces inside the box, roundabout details, mirroring, lanes; with `MAPBOX_STYLEKIT` set, that `hudglyphs.h` is what the generator makes |
 | `test_hud_handles.py` | `hudhandles.h`: the F54's own set-up gives 1..6 and bar 0x16, another numbering its own, frames 11-13, the kept file's text |
 | `test_hud_init.py` | `hud.h` built for the Mac with the DSI stream stubbed: handles learnt per terminal and drawn on, copies to 82/02 with its handles, the bar hidden, `hud_hide` and C04 on one terminal only, the box fitted to `ImageGetSize` answers, the comma and typographic characters in texts, day / night and `hud_colour_day` |
+| `test_hud_native_bars.py` | measured compact bars, late replies/fixed boxes, map/registration identity, primary-only commands and send-lock/failed-echo guards; real header and worker with synthetic transport |
 | `test_rghook_lanes.py` | `rghook.c` lane decoding into the routeguidance file |
 | `test_rghook_reroute.py` | `rghook.c` `cur_view`: the start marker skipped after a reroute, the distance in each unit, `keep_start_marker`, the cases left as before |
 | `test_builds.py` | `kBuilds` and `src/tilt_*.json` without firmware: the same 19 places and new code in every build, every branch lands where meant, the 1607 entry and its installer rows; with `CPA_HMI_1607` (the plain HmiMain3D of 1607 Build 153) every 1607 value against the file |

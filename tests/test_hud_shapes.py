@@ -292,10 +292,11 @@ int main(int argc, char **argv) { printf("%d\n", hud::udiv(atoi(argv[1]), atoi(a
 
     def test_glyphs_generated(self):
         swift = Path(os.environ.get('MAPBOX_STYLEKIT', '/nonexistent'))   # ManeuversStyleKit.swift, mapbox-navigation-ios v0.40.0
-        if not swift.exists():
-            self.skipTest('set MAPBOX_STYLEKIT to ManeuversStyleKit.swift (mapbox-navigation-ios v0.40.0)')
+        lanes = swift.with_name('LanesStyleKit.swift')
+        if not swift.exists() or not lanes.exists():
+            self.skipTest('set MAPBOX_STYLEKIT to ManeuversStyleKit.swift beside LanesStyleKit.swift (mapbox-navigation-ios v0.40.0)')
         out = Path(self.tmp.name) / 'hudglyphs.h'
-        subprocess.run(['python3', str(ROOT / 'tools/hud_glyphs.py'), str(swift), str(out)], check=True, capture_output=True)
+        subprocess.run(['python3', str(ROOT / 'tools/hud_glyphs.py'), str(swift), str(lanes), str(out)], check=True, capture_output=True)
         self.assertEqual(out.read_text(), (ROOT / 'src/hudglyphs.h').read_text())
 
 
