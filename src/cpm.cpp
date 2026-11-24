@@ -17,6 +17,7 @@
 //       84 / 85  Fill toward the turn       hud_fill (hud.h): the maneuver fills with the effect colour over the last 300 m
 //       88 / 89  Blink near the turn        hud_blink: it blinks route colour <-> effect colour in the last fifth
 //       Effect colour                       96-98 / 99-101: Orange / Grey / White = hud_colour 5 / 3 / 4 (F54 palette at night)
+//       HUD picture size                    116-118 / 119-121: Auto / Compact / Large (hud_box; applies after restart)
 //     iDrive control
 //       6 / 17   Enable knob tilts          carplay_tilt patch (src/tilt_006.json) in the HMI's memory
 //       Touchpad
@@ -40,6 +41,7 @@ int open(const char *, int, ...);
 long write(int, const void *, unsigned long);
 int close(int);
 int unlink(const char *);
+int rename(const char *, const char *);
 int mkdir(const char *, unsigned);
 void *mmap(void *, unsigned long, int, int, int, long);
 int munmap(void *, unsigned long);
@@ -53,6 +55,16 @@ int pathmgr_unlink(const char *path);
 int chmod(const char *, unsigned);
 int spawnl(int, const char *, const char *, ...);
 char *getenv(const char *);
+#if defined(__APPLE__)
+int *__error(void);
+#define CPM_ERRNO (*__error())
+#elif defined(__linux__)
+int *__errno_location(void);
+#define CPM_ERRNO (*__errno_location())
+#else
+int *__get_errno_ptr(void);
+#define CPM_ERRNO (*__get_errno_ptr())
+#endif
 }
 #define O_WRONLY 1
 #define O_CREAT  0x100
@@ -255,6 +267,69 @@ int colourLevel() {
   return -1;
 }
 
+struct HudSize {
+  unsigned action, model;
+  const char *box, *label;
+};
+const HudSize kHudSizes[3] = { { 116, 119, "", "Auto" },
+                               { 117, 120, "36 16 89 69\n", "Compact HUD (126 x 77)" },
+                               { 118, 121, "6wa\n", "Large HUD (199 x 129)" } };
+const char *const kHudBox = "/var/opt/hmi/data/rw/carplaymenu/hud_box";
+const char *const kHudBox6wa = "/var/opt/hmi/data/rw/carplaymenu/hud_box_6wa";
+const char *const kHudBoxTmp = "/var/opt/hmi/data/rw/carplaymenu/hud_box.menu.tmp";
+bool hudSizeText(const char *a, const char *b) {
+  while (*a && *a == *b) {
+    a++;
+    b++;
+  }
+  return !*a && !*b;
+}
+int hudSizeLevel() {
+  int fd = open(kHudBox, 0);
+  if (fd < 0) {
+    if (CPM_ERRNO != 2)
+      return -1;
+    fd = open(kHudBox6wa, 0);
+    if (fd >= 0)
+      return close(fd) == 0 ? 2 : -1;
+    return CPM_ERRNO == 2 ? 0 : -1;  // only absence of both overrides means automatic sizing
+  }
+  char box[64];
+  long n = read(fd, box, sizeof box - 1);
+  int closed = close(fd);
+  if (n <= 0 || n >= (long)sizeof box - 1 || closed != 0)
+    return -1;
+  box[n] = 0;
+  while (n && (box[n - 1] == '\n' || box[n - 1] == '\r' || box[n - 1] == ' ' || box[n - 1] == '\t'))
+    box[--n] = 0;
+  const char *p = box;
+  while (*p == ' ' || *p == '\t')
+    p++;
+  if (hudSizeText(p, "36 16 89 69"))
+    return 1;
+  if (hudSizeText(p, "6wa") || hudSizeText(p, "6WA"))
+    return 2;
+  return -1;  // a custom box has no matching preset
+}
+bool removeHudBox(const char *path) {
+  return unlink(path) == 0 || CPM_ERRNO == 2;
+}
+bool writeHudBox(const char *value) {
+  unsigned n = 0;
+  while (value[n])
+    n++;
+  int fd = open(kHudBoxTmp, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+  if (fd < 0)
+    return false;
+  long written = write(fd, value, n);
+  int closed = close(fd);
+  if (written != (long)n || closed != 0 || rename(kHudBoxTmp, kHudBox) != 0) {
+    unlink(kHudBoxTmp);
+    return false;
+  }
+  return true;
+}
+
 void optPath(int i, char *buf, unsigned cap) {
   snprintf(buf, cap, "%s/%s", kCfgDir, g_options[i].file);
 }
@@ -424,8 +499,8 @@ bool loadBuildTab(const char *version) {
   if (n <= 0)
     return false;
   g_tabText[n] = 0;
-  static const char *const kNames[] = { "touchFn",  "ctlSetFn", "ctlProxy", "playFn", "playObj", "tdFirst",
-                                        "tdEnd",    "tdTime",   "tdOrigin", "pbw",    "pbwBmw",  "ini" };
+  static const char *const kNames[] = { "touchFn", "ctlSetFn", "ctlProxy", "playFn", "playObj", "tdFirst",
+                                        "tdEnd",   "tdTime",   "tdOrigin", "pbw",    "pbwBmw",  "ini" };
   u32 *const fields[] = { &g_tab.touchFn, &g_tab.ctlSetFn, &g_tab.ctlProxy, &g_tab.playFn, &g_tab.playObj, &g_tab.tdFirst,
                           &g_tab.tdEnd,   &g_tab.tdTime,   &g_tab.tdOrigin, &g_tab.pbw,    &g_tab.pbwBmw,  &g_tab.ini };
   u32 seen = 0, nt = 0, nf = 0;
@@ -466,7 +541,10 @@ bool loadBuildTab(const char *version) {
   }
   char b[240];
   if (bad || !hmiOk || seen != (1u << (sizeof kNames / sizeof kNames[0])) - 1) {
-    snprintf(b, sizeof b, "CarPlayMenu: build.tab not used (%s)", bad ? "unreadable line" : !hmiOk ? "for another HMI build" : "values missing");
+    snprintf(b, sizeof b, "CarPlayMenu: build.tab not used (%s)",
+             bad      ? "unreadable line"
+             : !hmiOk ? "for another HMI build"
+                      : "values missing");
     logLine(b);
     return false;
   }
@@ -480,7 +558,7 @@ bool loadBuildTab(const char *version) {
 }
 
 void detectBuild() {
-  static char v[160];   // g_tab.id points here when build.tab is used
+  static char v[160];  // g_tab.id points here when build.tab is used
   int fd = open(kVersion, 0);
   long n = fd >= 0 ? read(fd, v, sizeof v - 1) : -1;
   if (fd >= 0)
@@ -1684,6 +1762,32 @@ bool setColour(int k) {
   logLine(b);
   return true;
 }
+bool setHudSize(int k) {
+  if (k < 0 || k >= 3)
+    return false;
+  mkdir(kCfgDir, 0777);
+  bool ok = (k == 0 ? removeHudBox(kHudBox) : writeHudBox(kHudSizes[k].box)) && removeHudBox(kHudBox6wa);
+  int actual = hudSizeLevel();
+  for (int j = 0; j < 3; j++)
+    g_app->updateModel(kHudSizes[j].model, j == actual);
+  if (!ok || actual != k) {
+    logLine("CarPlayMenu: could not save HUD picture size; menu shows the saved setting");
+    return false;
+  }
+  char b[144];
+  snprintf(b, sizeof b, "CarPlayMenu: HUD picture size -> %s (applies after restart)", kHudSizes[k].label);
+  logLine(b);
+  return true;
+}
+bool onHudSizeAuto(void *, const bmw::Parcel &) {
+  return setHudSize(0);
+}
+bool onHudSizeCompact(void *, const bmw::Parcel &) {
+  return setHudSize(1);
+}
+bool onHudSizeLarge(void *, const bmw::Parcel &) {
+  return setHudSize(2);
+}
 bool onColOrange(void *, const bmw::Parcel &) {
   return setColour(0);
 }
@@ -1783,6 +1887,13 @@ bool appOnInit(bmw::PluginApp *self) {
     d.stub = cols[k];
     self->addHandler(kColours[k].action, d);
   }
+  static const Stub sizes[3] = { onHudSizeAuto, onHudSizeCompact, onHudSizeLarge };
+  for (int k = 0; k < 3; k++) {
+    bmw::ActionDelegate d;
+    d.object = self;
+    d.stub = sizes[k];
+    self->addHandler(kHudSizes[k].action, d);
+  }
   if (!kHudOnly) {
     bmw::ActionDelegate r;
     r.object = self;
@@ -1799,6 +1910,9 @@ bool appOnInit(bmw::PluginApp *self) {
   int cl = colourLevel();
   for (int k = 0; k < 3; k++)
     self->updateModel(kColours[k].model, k == cl);
+  int hs = hudSizeLevel();
+  for (int k = 0; k < 3; k++)
+    self->updateModel(kHudSizes[k].model, k == hs);
   logLine("CarPlayMenu: onInit, handlers registered");
   return ok;
 }

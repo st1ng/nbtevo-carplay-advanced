@@ -417,8 +417,11 @@ double buffers. The HUD shows what the cluster's guidance shows. `hud.h` does th
   - A new distance updates only the texts (and the HUD effects' level, below).
   - Route state 3/4 (Loading / Locating) keeps the last picture.
   - No active route clears to the state the BMW navigation leaves at the end of a route.
-- **The BMW navigation wins**: any other client's drawing call on 82/00 (not an echo of ours; recent calls are hashed) means the BMW
-  navigation is guiding. Nothing is drawn until 5 s after its last call, then the picture is drawn again.
+- **Other drawing wins**: a known mutation addressed to a terminal currently drawn on (including a configured mirror) acquires
+  priority for 5 s. Getters, replies and other terminals do not. Echo keys include destination, instance and registration epoch as
+  well as function/payload/time. Every outgoing mutation checks priority again, so a callback in the middle of a picture/clear
+  stops subsequent commands. Updating handles or accepting a size may invalidate the local cache without erasing the new owner's
+  buffers. Identical same-target traffic can still be indistinguishable from our echo; no exclusive native ownership is claimed.
 - **Set-up** (`initTerminal`, `takeLearnt`, `measureBox`; `src/hudhandles.h`), from the cluster firmware and the navigation's own
   set-up (MINIHU `docs/HUD_TERMINAL_REFERENCES.md` "The whole picture", `docs/CLUSTER_FIRMWARE.md`):
   - **Handles are the cluster's.** At its start the BMW navigation creates its instances by name (200 `CreateInstance`, answer
@@ -432,8 +435,14 @@ double buffers. The HUD shows what the cluster's guidance shows. `hud.h` does th
     Why: the F25 X3 refuses texts on 2/3/4 and takes them on 0x0c/0x12/0x0f (issue #9), its buffer 5 is 0 x 0.
   - **The frame's bar** (known from the set-up only) is hidden with every picture: we never set its value (an F30 6WB showed it
     over the speed, PR #13).
-  - **Picture size** (`measureBox`, at start and after the handles changed, not while the navigation guides): `ImageGetSize` on
-    picture A in the F54 form `[h]` and the 6WB form `[h][01]` (one is refused), 2 s. `fitBox` (ghackt's rule): 170 x 120 or more
+  - **Picture size** (`measureBox`, not while another renderer guides): `ImageGetSize` on picture A in the F54 form `[h]` and the
+    6WB form `[h][01]`, five non-blocking 2 s windows, separated by 1/2/5/10 s. Usable late replies remain accepted after exhaustion.
+    Source/destination/instance/handle and exact reply shape must match; one-byte native errors carry no request identity and do
+    not end a window. DSI re-registration and disappearance/return at the same numerical terminal address invalidate the request
+    epoch. After an exhausted startup, a new route or return from foreign guidance allows another bounded series; steady guidance
+    does not continuously poll. A late reply with the exact same identity has no wire transaction ID to distinguish its old series.
+    Replies only enter an atomic mailbox in the DSI callback; fitting and invalidating both blink buffers happen on the worker.
+    `fitBox` (ghackt's rule): 170 x 120 or more
     = the 6WA box; smaller = a square of 25/36 of the shorter side (<= 100), centred across, two thirds down (120 x 72 -> (35,15)-(85,65),
     the MINI box, drawn by halving as before; 126 x 77 -> (36,16)-(89,69)); 0 x 0 (not an instance yet) or no answer: no change.
     Other boxes are mapped linearly (`hudshapes.h` `toBox`, division by the constant 100). Not on the 6WB plane, not with a switch.
@@ -458,8 +467,8 @@ double buffers. The HUD shows what the cluster's guidance shows. `hud.h` does th
   JayJay3071/nbt-android-auto, verified there on an old NBT): 0x17 the area, 0x1A/0x1B/0x1C street / distance / unit, 0x1F/0x20 the
   double-buffered perspective plane 221 x 158. `ImageGetSize` (C04) is asked for 0x1F and 5 in both forms (`[h][01]` 6WB, `[h]` F54);
   only a non-zero size counts (the F54 answers 0 x 0 for handles it lacks). 0x1F alone = 6WB: `use6wb` moves the picture from the 6WA
-  box to (66,40)-(166,140) and sends texts as ISO-8859-15 (encoding 01, JayJay). Also 6WB when the BMW navigation is seen drawing on
-  0x18..0x35 (above the F54's surfaces; only without a map from a set-up); the switch file `hud_layout` (`6wa` / `6wb`) decides
+  box to (66,40)-(166,140) and sends texts as ISO-8859-15 (encoding 01, JayJay). Attempted drawing or probing an unconfirmed high
+  handle is not layout evidence; the switch file `hud_layout` (`6wa` / `6wb`) decides
   instead. With a map from a set-up the 6WB look (texts, outlines, plane) is used with its handles. Logged: `layout probe`,
   `cluster layout ...`, and every `registry: HUDTerminal 82/xx` instance (82/02 may be a separate HUD). The 6WB profile is untested
   in a car (2026-11-15: a BMW F-series user, HUD dark with the 6WA handles).
@@ -491,6 +500,12 @@ double buffers. The HUD shows what the cluster's guidance shows. `hud.h` does th
   Switches: `hud_box_6wa` keeps the 6WA box; `hud_box` "mini" / "6wa" / "<x> <y> <size>" (ghackt) / "<x0> <y0> <x1> <y1>" (PR #13,
   FreZZZeR: "35 15 85 65" verified on an F30 6WB, 126 x 77 buffer); `hud_hide` "<handle> ..." (PR #13: "21 22" hid that 6WB's own
   bar) makes handles invisible with every picture; `hud_mono` draws everything in the route colour.
+- **Menu picture size** (`HUD effects > HUD picture size`, actions116–118, bool models119–121): Auto removes `hud_box` and legacy
+  `hud_box_6wa`; Compact writes `36 16 89 69` (53 x 53 for a126 x77 buffer); Large writes `6wa` (original100 x100 box). These are
+  6WA-style picture geometry presets, not `hud_layout`/`hud_inst`/handle/bar settings; genuine 6WB planes retain their perspective
+  mapping and the cached 6WA box survives a layout correction. Unknown custom boxes get no preset tick. Atomic temp
+  replacement preserves the former box on a failed write; after any error models reflect the saved value. Full-menu changes need
+  Restart to apply; the HUD-only sender reads them on its next CarPlay session. The menu never sends MOST traffic or changes coding.
 - **Pictures** (`hudshapes.h`): Mapbox's maneuver drawings (`hudglyphs.h`, generated by `tools/hud_glyphs.py` from
   mapbox-navigation-ios v0.40.0 `ManeuversStyleKit.swift`), turned into filled convex pieces, for all 54 iAP2 maneuver types.
   Regenerating, previewing and changing them: the `hud-glyphs` skill. The pieces of one tone that share an edge are joined back into
@@ -694,7 +709,7 @@ display layer does; it is now shortened to 22, `shortRoad` below).
     (variant 0x9c71), and a menu plugin is instantiated only with A4A / A4A_REMOTE_APPS / REMOTE_HMI / TOUCH_COMMAND coded
     (`CSpecialAppsHelper`). HUD-only builds the mm-ipod wrapper itself (a copy of the original mm-ipod + the librghook preload, with the
     `hud_guidance` switch), and installs the **HUD-only menu**: `cpm.cpp` built with `CPM_HUD_ONLY` (`libCarPlayMenu-hud.so`) and
-    `CarPlayMenu-hud.xml` (build.sh cuts it from `CarPlayMenu.xml`: states 20 with the HUD row and HUD effects, 81, 93), staged as
+    `CarPlayMenu-hud.xml` (build.sh cuts it from `CarPlayMenu.xml`: states 20 with the HUD row and HUD effects, 81, 93, 113), staged as
     `libCarPlayMenu.so` / `CarPlayMenu.xml`, plus the marker `hud_only`. That menu patches nothing and hooks nothing; its toggles
     write the switch files (and link or unlink the mm-ipod wrapper for "CarPlay directions in HUD"), read by mm-ipod at the next
     CarPlay connection. `boot.sh` skips the bootloop guard when `hud_only` is there (an uncoded car never starts the menu, which would
@@ -787,6 +802,10 @@ built and checked against the package's layouts only, **untested in a car** (nor
 | `test_hud_shapes.py` | every maneuver picture: convex pieces inside the box, roundabout details, mirroring, lanes; with `MAPBOX_STYLEKIT` set, that `hudglyphs.h` is what the generator makes |
 | `test_hud_handles.py` | `hudhandles.h`: the F54's own set-up gives 1..6 and bar 0x16, another numbering its own, frames 11-13, the kept file's text |
 | `test_hud_init.py` | `hud.h` built for the Mac with the DSI stream stubbed: handles learnt per terminal and drawn on, copies to 82/02 with its handles, the bar hidden, `hud_hide` and C04 on one terminal only, the box fitted to `ImageGetSize` answers, the comma and typographic characters in texts, day / night and `hud_colour_day` |
+| `test_hud_size_recovery.py` | bounded retries, late replies, real anonymous native errors, exact request identity, manual boxes and both blink buffers |
+| `test_hud_handover.py` | one continuous real worker: foreign getters/targets, yield/resume, mid-batch ownership change, learned-map cleanup, registration epochs and route/handback recovery |
+| `test_hud_send_guards.py` | ownership changes while waiting for the send lock, unsent/failed-send echo records, late positive layout corrections and unchanged 6WB wire geometry |
+| `test_hud_profile_menu.py` | actual menu setting functions: preset persistence/precedence, atomic replacement and failure readback, unchanged unrelated HUD settings, actions/models/texts |
 | `test_rghook_lanes.py` | `rghook.c` lane decoding into the routeguidance file |
 | `test_rghook_reroute.py` | `rghook.c` `cur_view`: the start marker skipped after a reroute, the distance in each unit, `keep_start_marker`, the cases left as before |
 | `test_builds.py` | `kBuilds` and `src/tilt_*.json` without firmware: the same 19 places and new code in every build, every branch lands where meant, the 1607 entry and its installer rows; with `CPA_HMI_1607` (the plain HmiMain3D of 1607 Build 153) every 1607 value against the file |

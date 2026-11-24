@@ -52,7 +52,7 @@ import xml.etree.ElementTree as ET
 src, dst = sys.argv[1], sys.argv[2]
 text = open(src).read()
 app = ET.fromstring(text[text.index('<pluginApps'):]).find('pluginApp')
-keep_states, keep_rows = {20, 81, 93}, {8, 80}          # state 20: "CarPlay directions in HUD" (action 8), "HUD effects >" (80)
+keep_states, keep_rows = {20, 81, 93, 113}, {8, 80}     # state 113: the shared HUD picture-size menu
 states = app.find('hmiStates')
 for st in list(states):
     if int(st.get('id')) not in keep_states:

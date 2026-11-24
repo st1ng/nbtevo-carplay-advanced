@@ -7,7 +7,7 @@
 
 Checks: ids unique across actions, models, states and components; every component's action / model / textModel exists and has the
 right kind (checkbox and radiobutton: raAction + raBoolModel; button: hmiAction to an existing hmiState, or raAction); every
-textIdModel's textId is in texts.py; every raAction has a handler in cpm.cpp (g_options, kSens, kColours, kActRestart, or the entry button's
+textIdModel's textId is in texts.py; every raAction has a handler in cpm.cpp (g_options, kSens, kColours, kHudSizes, kActRestart, or the entry button's
 combined action) and every raBoolModel is set by cpm.cpp; every hmiState is reachable from the entry button."""
 import ast
 import re
@@ -48,6 +48,8 @@ def main():
     cpp = (ROOT / 'src' / 'cpm.cpp').read_text()
     opt = [(int(a), int(m), f) for f, a, m in re.findall(r'\{ "(\w+)", (\d+), (\d+), "[^"]*", false \}', cpp)]
     sens = [(int(a), int(m)) for a, m in re.findall(r'\{ (\d+), (\d+), \d+, "\w+"(?:, 0)? \}', cpp)]  # kSens, kColours
+    sizes = re.search(r'const HudSize kHudSizes\[3\] = (.*?);', cpp, re.S).group(1)
+    sens += [(int(a), int(m)) for a, m in re.findall(r'\{ (\d+), (\d+),', sizes)]
     restart = int(re.search(r'kActRestart = (\d+)', cpp).group(1))
     handled = {a for a, _, _ in opt} | {a for a, _ in sens} | {restart}
     set_models = {m for _, m, _ in opt} | {m for _, m in sens}
@@ -62,7 +64,7 @@ def main():
         if m.tag == 'textIdModel' and int(m.get('textId')) not in texts:
             problems.append('textIdModel %d: textId %s not in texts.py' % (mid, m.get('textId')))
         if m.tag == 'raBoolModel' and mid not in set_models:
-            problems.append('raBoolModel %d is never set by cpm.cpp (g_options / kSens / kColours)' % mid)
+            problems.append('raBoolModel %d is never set by cpm.cpp (g_options / kSens / kColours / kHudSizes)' % mid)
 
     combined = set()
     for aid, a in actions.items():

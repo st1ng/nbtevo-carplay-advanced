@@ -123,12 +123,39 @@ inline u8 instOf(int slot) {
 inline int slotOf(u8 inst) {
   return inst == 2 ? 1 : inst == 0 ? 0 : -1;
 }
-// the layout probe (detectLayout): ImageGetSize answered for handle 5 (the 6WA picture) / 0x1F (the 6WB plane); the BMW navigation
-// seen drawing on a 6WB handle (0x18..0x35)
-volatile int g_size5, g_size1f, g_seen6wb;
-// the picture buffer's size (measureBox): the handle asked, its answer (w, h) and the answers / refusals counted
-volatile u16 g_askH, g_askW, g_askHt;
-volatile int g_askOk, g_askErr;
+// Positive layout-probe answers: an attempted use of a handle is not evidence that the instance exists.
+volatile int g_size5, g_size1f;
+// The worker publishes a request identity; the single DSI callback publishes replies without waiting or drawing.
+volatile u32 g_sizeGeneration, g_sizeKey, g_sizeInst;
+volatile u32 g_terminalEpoch;
+struct {
+  volatile u32 seq, generation, dimensions;
+} g_sizeReply;
+inline u32 sizeLoad(const volatile u32 &v) {
+  return __atomic_load_n(&v, __ATOMIC_ACQUIRE);
+}
+inline void sizeStore(volatile u32 &v, u32 n) {
+  __atomic_store_n(&v, n, __ATOMIC_RELEASE);
+}
+void terminalChanged() {
+  sizeStore(g_sizeGeneration, 0);
+  __atomic_fetch_add(&g_terminalEpoch, 1, __ATOMIC_RELEASE);
+  g_size5 = g_size1f = 0;
+}
+inline bool usableSize(u32 w, u32 h) {
+  return w >= 24 && h >= 24 && w <= 1023 && h <= 1023;
+}
+void recordSize(u16 src, u8 inst, u16 handle, u16 w, u16 h) {
+  u32 generation = sizeLoad(g_sizeGeneration);
+  if (!generation || sizeLoad(g_sizeKey) != ((u32)src << 16 | handle) || sizeLoad(g_sizeInst) != inst ||
+      generation != sizeLoad(g_sizeGeneration))
+    return;
+  // A sequence protects the two-word mailbox while the worker reads it; the callback never takes a lock.
+  __atomic_fetch_add(&g_sizeReply.seq, 1, __ATOMIC_ACQ_REL);
+  sizeStore(g_sizeReply.generation, generation);
+  sizeStore(g_sizeReply.dimensions, (u32)w << 16 | h);
+  __atomic_fetch_add(&g_sizeReply.seq, 1, __ATOMIC_RELEASE);
+}
 // the handles learnt from the navigation's set-up, per terminal (hudhandles.h): g_learnt[slot] is a complete map not yet used
 hudh::Learner g_learn[2];
 hudh::Map g_learntMap[2];
@@ -142,6 +169,45 @@ u32 nowMs() {
   hud_timespec t;
   clock_gettime(2 /* CLOCK_MONOTONIC */, &t);
   return (u32)(t.sec * 1000 + t.nsec / 1000000);
+}
+bool foreignGuidance() {
+  u32 t = sizeLoad(g_navMs);
+  return t && nowMs() - (t & ~1u) < 5000;  // bit 0 marks even clock zero as a valid timestamp
+}
+// Only mutations acquire the display; getters (notably ImageGetSize) do not.
+bool changesHud(u16 fkt) {
+  switch (fkt) {
+    case 0x200:
+    case 0x203:
+    case 0x204:
+    case 0x20E:
+    case 0x210:
+    case 0x218:
+    case 0x219:
+    case 0x21B:
+    case 0x21C:
+    case 0x21D:
+    case 0x21E:
+    case 0x21F:
+    case 0x220:
+    case 0x227:
+    case 0x229:
+    case 0x22B:
+    case 0xC03:
+    case 0xC05:
+    case 0xC06:
+    case 0xC07:
+    case 0xC09:
+      return true;
+    default:
+      return false;
+  }
+}
+bool renderedTerminal(u16 host, u8 inst) {
+  if (host == g_host && inst == g_inst)
+    return host != 0;
+  int sl = slotOf(g_inst);
+  return g_mirror && sl >= 0 && inst == instOf(1 - sl) && host && host == g_hostOf[1 - sl];
 }
 // sleeps instead of spinning: with QNX's fixed priorities a sched_yield() loop may never let the lock's owner run
 void lock() {
@@ -223,6 +289,7 @@ void onAttached(void *) {
 void onDetached(void *) {
   g_attached = 0;
   g_registered = 0;
+  terminalChanged();
   if (g_log)
     g_log("CarPlayMenu: HUD: detached from the MOST service");
 }
@@ -237,8 +304,7 @@ u16 rd16(const u8 *p) {
 // Our calls come back to every subscriber with the head unit's node address as the source (0x2000, not our client's): a call
 // equal (function and payload) to one of the last ones we sent is ours, not the BMW navigation (like NBT-AAD's RecentCalls).
 struct Recent {
-  u16 fkt;
-  u32 n, h, t;
+  volatile u32 seq, fkt, n, h, t, target, epoch;
 };
 Recent g_recent[32];
 volatile u32 g_recentN;
@@ -248,18 +314,30 @@ u32 hashOf(const u8 *d, u32 n) {
     h = (h ^ d[i]) * 16777619u;
   return h;
 }
-void noteSent(u16 fkt, const u8 *d, u32 n) {
-  Recent &r = g_recent[g_recentN++ % 32];
-  r.fkt = fkt;
-  r.n = n;
-  r.h = hashOf(d, n);
-  r.t = nowMs();
+u32 noteSent(u16 host, u8 inst, u16 fkt, const u8 *d, u32 n) {
+  u32 index = g_recentN++ % 32;
+  Recent &r = g_recent[index];
+  __atomic_fetch_add(&r.seq, 1, __ATOMIC_ACQ_REL);
+  sizeStore(r.fkt, fkt);
+  sizeStore(r.n, n);
+  sizeStore(r.h, hashOf(d, n));
+  sizeStore(r.t, nowMs());
+  sizeStore(r.target, (u32)host << 8 | inst);
+  sizeStore(r.epoch, sizeLoad(g_terminalEpoch));
+  __atomic_fetch_add(&r.seq, 1, __ATOMIC_RELEASE);
+  return index;
 }
-bool isOurs(u16 fkt, const u8 *d, u32 n) {
+bool isOurs(u16 host, u8 inst, u16 fkt, const u8 *d, u32 n) {
   u32 h = hashOf(d, n), now = nowMs();
   for (u32 i = 0; i < 32; i++) {
     const Recent &r = g_recent[i];
-    if (r.t && r.fkt == fkt && r.n == n && r.h == h && now - r.t < 5000)
+    u32 seq = sizeLoad(r.seq);
+    if (!seq || (seq & 1))
+      continue;
+    bool match = sizeLoad(r.fkt) == fkt && sizeLoad(r.n) == n && sizeLoad(r.h) == h &&
+                 sizeLoad(r.target) == ((u32)host << 8 | inst) && sizeLoad(r.epoch) == sizeLoad(g_terminalEpoch) &&
+                 now - sizeLoad(r.t) < 5000;
+    if (match && seq == sizeLoad(r.seq))
       return true;
   }
   return false;
@@ -301,13 +379,19 @@ void onData(void *, void *is) {
   if (!p)
     return;
   if (id == kInfoClientResponse && len >= 6) {
+    u32 oldClient = g_client;
+    u16 oldSelf = g_self;
     g_client = rd32(p);
     g_self = rd16(p + 4);
     if (g_client == 0xffffffffu) {
+      g_registered = 0;
+      terminalChanged();
       if (g_log)
         g_log("CarPlayMenu: HUD: MOST registration refused");
       return;
     }
+    if (!g_registered || oldClient != g_client || oldSelf != g_self)
+      terminalChanged();
     g_registered = 1;
     lock();
     S.setNotif(g_cli, kAttrCommState);
@@ -335,9 +419,12 @@ void onData(void *, void *is) {
     }
     g_hostOf[0] = t0;
     g_hostOf[1] = t2;
+    u8 oldInst = g_inst;
     if (!g_instFixed && cnt)  // no 82/00 but an 82/02: that one is drawn on
       g_inst = (u8)(!t0 && t2 ? 2 : 0);
     host = g_hostOf[slotOf(g_inst) < 0 ? 0 : slotOf(g_inst)];
+    if (host != g_host || oldInst != g_inst)
+      terminalChanged();
     if (host != g_host) {
       g_host = host;
       logf1("CarPlayMenu: HUD: drawing on HUDTerminal 82/%02x at device %04x", g_inst, host);
@@ -378,25 +465,22 @@ void onData(void *, void *is) {
     u32 varTag = rd32(p + 4), varVal = rd32(p + 8);
     // ImageGetSize answers: [handle][w][h] (F54, 6 bytes) or [handle][01][w][h] (6WB, 7 bytes), sizes u16 big-endian. The F54 also
     // answers for handles it does not have, with 0 x 0: only a real size counts. Only the terminal drawn on.
-    if (fkt == 0xC04 && dst == g_self && src != g_self && inst == g_inst) {
-      if (op == kOpResultAck && (an == 6 || an == 7)) {
+    if (fkt == 0xC04 && dst == g_self && src == g_host && inst == g_inst) {
+      if (op == kOpResultAck && (an == 6 || (an == 7 && p[34] == 1))) {
         const u8 *a = p + 32 + (an == 7 ? 3 : 2);
         u16 h = (u16)(p[32] << 8 | p[33]), w = (u16)(a[0] << 8 | a[1]), ht = (u16)(a[2] << 8 | a[3]);
-        if (w && ht && h == 5)
-          g_size5 = 1;
-        if (w && ht && h == 0x1f)
-          g_size1f = 1;
-        if (h == g_askH) {
-          g_askW = w;
-          g_askHt = ht;
-          g_askOk = 1;
+        if (usableSize(w, ht)) {
+          if (h == 5)
+            g_size5 = 1;
+          if (h == 0x1f)
+            g_size1f = 1;
+          recordSize(src, inst, h, w, ht);
         }
-      } else if (op == 0xF || op == 9)
-        g_askErr++;
+      }
+      // Native errors can be only [05], with no handle/request ID. Logged below; they cannot complete this request.
     }
     dbgMsg(src == g_self ? "echo" : dst == g_self ? "in  " : "seen", src, dst, fkt, op, p, len);
     bool normal = varTag == 2 && !(varVal >= 4 && varVal <= 9);  // not the send status of a message of ours
-    bool drawing = (fkt >= 0x200 && fkt <= 0x22B) || (fkt >= 0xC03 && fkt <= 0xC09);
     u32 dn = rd32(p + 28);
     const u8 *dd = p + 32;
     if (32 + dn > len)
@@ -416,16 +500,15 @@ void onData(void *, void *is) {
         }
       }
     }
-    if (op <= 8 && src != g_self && normal && drawing && !isOurs(fkt, dd, dn)) {  // another client (the BMW navigation) drawing
-      if (inst == g_inst && dn >= 2 && (dd[0] << 8 | dd[1]) >= 0x18 && (dd[0] << 8 | dd[1]) <= 0x35)  // 6WB: the F54's end at 0x17
-        g_seen6wb = 1;
+    if (op <= 8 && src != g_self && normal && changesHud(fkt) && dn >= 2 && renderedTerminal(dst, inst) &&
+        !isOurs(dst, inst, fkt, dd, dn)) {
       if (!g_navMs) {
         char m[120];
         snprintf(m, sizeof m, "CarPlayMenu: HUD: other client on 82/%02x: %04x -> %04x fkt %03x op %u", inst, src, dst, fkt, op);
         if (g_log)
           g_log(m);
       }
-      g_navMs = nowMs() | 1;
+      sizeStore(g_navMs, nowMs() | 1);
     }
   }
 }
@@ -729,11 +812,13 @@ bool g_mmapKnown;
 const u8 kFill = 4;  // the BMW navigation's colour on 6WA, F54 and 6WB alike (JayJay's 6WB recording: 21B 04 / 0A)
 // 6WB: texts in ISO-8859-15 (encoding 01, as verified there; the big distance font has no comma) and the picture moved from the 6WA
 // box (70,20)-(170,120) into the plane, centred on x 116 like JayJay's arrows: (66,40)-(166,140) of 221 x 158
-bool g_6wb;
+bool g_6wb, g_layoutFixed;
 
 // a MOST message through DSYSMOSTServer: destination, FBlock, instance, function, OpType, data
 bool send(u16 dst, u8 fb, u8 inst, u16 fkt, u8 op, const u8 *d, u32 n) {
   if (!g_registered || !dst)
+    return false;
+  if (fb == kFBlock && changesHud(fkt) && foreignGuidance())
     return false;
   Buf p;
   p.u32_(g_client);
@@ -750,7 +835,18 @@ bool send(u16 dst, u8 fb, u8 inst, u16 fkt, u8 op, const u8 *d, u32 n) {
   p.u32_(n);
   p.bytes(d, n);
   lock();
+  if (fb == kFBlock && changesHud(fkt) && foreignGuidance()) {
+    unlock();
+    return false;
+  }
+  u32 recent = fb == kFBlock ? noteSent(dst, inst, fkt, d, n) : 32;
   bool ok = request(kReqProcessMessage, p);
+  if (!ok && recent < 32) {
+    Recent &r = g_recent[recent];
+    __atomic_fetch_add(&r.seq, 1, __ATOMIC_ACQ_REL);
+    sizeStore(r.fkt, 0);  // a failed send cannot be the echo of a later foreign mutation
+    __atomic_fetch_add(&r.seq, 1, __ATOMIC_RELEASE);
+  }
   unlock();
   return ok;
 }
@@ -779,7 +875,6 @@ bool call(u16 fkt, const u8 *d, u32 n, bool primary = false) {
   if (!g_registered || !g_host)
     return false;
   dbgOut(fkt, d, n);
-  noteSent(fkt, d, n);
   bool ok = send(g_host, kFBlock, g_inst, fkt, kOpStartResultAck, d, n);
   u16 mh = primary || fkt == 0xC04 ? 0 : mirrorHost();
   if (mh && n >= 2 && n <= 300) {
@@ -793,7 +888,6 @@ bool call(u16 fkt, const u8 *d, u32 n, bool primary = false) {
       m[2] = (u8)(h >> 8);
       m[3] = (u8)h;
     }
-    noteSent(fkt, m, n);
     usleep(5000);
     send(mh, kFBlock, instOf(1 - slotOf(g_inst)), fkt, kOpStartResultAck, m, n);
   }
@@ -906,7 +1000,7 @@ bool polygon(u16 h, u16 idx, const Pt *p, u32 k, bool whole = false) {
     return false;
   for (u32 i = 0; i < k; i++)
     q[i] = p[i];
-  if (g_boxMode != kBox6wa) {  // the MINI cluster's picture area (half size), or the box fitted to the buffer
+  if (!g_6wb && g_boxMode != kBox6wa) {  // the 6WB plane keeps its own mapping without overwriting the saved 6WA box
     k = g_boxMode == kBoxMini ? (whole ? toMiniPoly(q, k) : toMini(q, k)) : whole ? toBoxPoly(q, k, g_box) : toBox(q, k, g_box);
     if (k < 3)
       return true;
@@ -1159,6 +1253,14 @@ Shape g_shape;
 Polys g_polys;  // large: not on the worker thread's stack
 bool g_blinking;
 u32 g_level = ~0u, g_blinkTick;  // hud_fill / hud_blink state: the level drawn, both buffers hold a phase
+void forgetDrawing() {
+  g_shown = false;
+  g_fresh = true;
+  g_lastType = g_lastIndex = ~0u;
+  g_lastRoad[0] = g_lastNum[0] = g_lastUnit[0] = 0;
+  g_blinking = false;
+  g_level = ~0u;
+}
 // one picture into buffer buf (emptied first). level: the progress fill 0..8 (hud_fill); high: the blink's bright phase, the whole
 // maneuver in the effect colour. The lanes are added after the effect, so they never fill or blink.
 void drawPicture(u16 buf, const Guide &g, u32 level, bool high) {
@@ -1215,7 +1317,10 @@ void drawManeuver(const Guide &g, const char *dn, const char *du, u32 level = 0)
     callHB(kSetVisibility, hBar, 0);
   for (u32 i = 0; i < g_nHide; i++)  // hud_hide: surfaces the cluster shows itself over other content (this terminal only)
     callHB(kSetVisibility, g_hide[i], 0, true);
-  g_shown = true;
+  if (foreignGuidance())
+    forgetDrawing();
+  else
+    g_shown = true;
 }
 void drawClear() {  // the state the BMW navigation leaves the terminal in at the end of a route
   callHB(kSetVisibility, hFrame, 0);
@@ -1229,11 +1334,7 @@ void drawClear() {  // the state the BMW navigation leaves the terminal in at th
   setText(hDist, "");
   setText(hUnit, "");
   callHB(kSetVisibility, hStreet, 0);
-  g_shown = false;
-  g_fresh = true;
-  g_lastType = g_lastIndex = ~0u;
-  g_blinking = false;
-  g_level = ~0u;
+  forgetDrawing();
 }
 
 // Test channel: /dev/shmem/carplaymenu-hudcmd, one HUDTerminal call per line, "fkt hexbytes" (e.g. "21d 0005000003040070007800800078"),
@@ -1287,7 +1388,6 @@ void runCmds() {
       }
       u16 host = g_hostOf[inst ? 1 : 0];  // exactly the terminal asked for, no copies
       if (fkt && host) {
-        noteSent((u16)fkt, d, k);
         dbgLine(inst ? "out 82/02" : "out ", (u16)fkt, kOpStartResultAck, d, k);
         send(host, kFBlock, inst, (u16)fkt, kOpStartResultAck, d, k);
         usleep(20000);
@@ -1360,7 +1460,9 @@ void textOverride() {
     logf1("CarPlayMenu: HUD: texts on street %u, distance %u, unit %u (switch hud_text_handles)", hStreet, hDist, hUnit);
   }
 }
-bool g_measureDue = true;  // the picture buffer's size is to be asked (at start, and after the handles changed)
+bool g_measureDue = true;  // a new bounded series, at start and after the primary map changes
+bool g_sizeWaiting, g_sizeDone;
+u32 g_sizeAttempts, g_sizeDeadline, g_sizeNext, g_sizeSerial, g_sizeReplySeen, g_sizeEpoch;
 void drawClear();
 // the terminal drawn on gets these handles; what is on show is cleared first (on the old ones) and drawn again on the new ones
 void useMap(const hudh::Map &m, const char *why) {
@@ -1393,6 +1495,8 @@ void useMirrorMap(const hudh::Map &m, const char *why) {
     logf1("CarPlayMenu: HUD: copies to HUDTerminal 82/%02x (the navigation set it up; hud_inst \"%u\" stops them)",
           instOf(1 - slotOf(g_inst)), g_inst);
   }
+  if (g_shown)
+    forgetDrawing();  // the new mirror needs the unchanged maneuver too; do not clear another owner's display
 }
 // a set-up the DSI thread completed (g_learnt): kept, and used
 void takeLearnt() {
@@ -1414,7 +1518,6 @@ void takeLearnt() {
 
 void use6wb(const char *why) {
   g_6wb = true;
-  g_boxMode = kBox6wa;  // the plane has its own mapping (polygon)
   if (!g_mapKnown) {
     hFrame = 0x17;
     hStreet = 0x1a;
@@ -1432,23 +1535,57 @@ void use6wb(const char *why) {
     g_log(m);
   }
 }
+void use6wa(const char *why) {
+  if (g_shown)
+    drawClear();
+  g_6wb = false;
+  if (!g_mapKnown) {
+    hudh::Map m = hudh::defaults();
+    hFrame = m.frame;
+    hStreet = m.street;
+    hDist = m.dist;
+    hUnit = m.unit;
+    hBufA = m.bufA;
+    hBufB = m.bufB;
+    hBar = m.bar;
+    g_visible = hBufB;
+  }
+  g_measureDue = true;
+  if (g_log) {
+    char m[120];
+    snprintf(m, sizeof m, "CarPlayMenu: HUD: cluster layout 6WA (%s)", why);
+    g_log(m);
+  }
+}
+void updateLayout() {
+  if (g_layoutFixed)
+    return;
+  if (!g_6wb && g_size1f && !g_size5) {
+    if (g_shown)
+      drawClear();
+    use6wb("ImageGetSize");
+    g_measureDue = true;
+  } else if (g_6wb && g_size5)
+    use6wa("ImageGetSize");
+}
 // Which layout the cluster has: ImageGetSize (C04, it only reads) for the 6WB plane 0x1F and the 6WA picture 5, in the 6WB form
 // [handle][01] and the F54 form [handle]. Only the instances the navigation created have a size (the F54 answers 0 x 0 for the
 // others, measured 2026-11-13). 0x1F alone with a size = 6WB. The switch file hud_layout ("6wa" or "6wb") decides instead.
 void detectLayout() {
+  g_layoutFixed = false;
   int fd = open("/var/opt/hmi/data/rw/carplaymenu/hud_layout", 0);
   if (fd >= 0) {
     char b[8] = { 0 };
     long n = read(fd, b, sizeof b - 1);
     close(fd);
     (void)n;
+    g_layoutFixed = b[0] == '6';
     if (b[0] == '6' && (b[2] == 'b' || b[2] == 'B')) {
       use6wb("switch file hud_layout");
       return;
     }
     if (b[0] == '6') {
-      if (g_log)
-        g_log("CarPlayMenu: HUD: cluster layout 6WA (switch file hud_layout)");
+      use6wa("switch file hud_layout");
       return;
     }
   }
@@ -1460,9 +1597,8 @@ void detectLayout() {
   for (int i = 0; i < 30 && !(g_size1f && g_size5); i++)
     usleep(50000);
   logf1("CarPlayMenu: HUD: layout probe: ImageGetSize gave a size for 0x1f %u, for 5 %u", g_size1f, g_size5);
-  if (g_size1f && !g_size5)
-    use6wb("ImageGetSize");
-  else if (g_log)
+  updateLayout();
+  if (!g_6wb && g_log)
     g_log(g_size5 ? "CarPlayMenu: HUD: cluster layout 6WA" : "CarPlayMenu: HUD: cluster layout not answered: the 6WA profile");
 }
 // The picture box from the buffer's own size (ghackt's rule, issues #9 and #12): a buffer smaller than the 6WA box gets a square of
@@ -1477,7 +1613,7 @@ void fitBox(u32 w, u32 h) {
       g_log("CarPlayMenu: HUD: the picture buffer is 0 x 0 (not created, or not a picture here): the box stays");
     return;
   }
-  if (w < 24 || h < 24 || w > 1023 || h > 1023) {
+  if (!usableSize(w, h)) {
     logf1("CarPlayMenu: HUD: picture buffer %u x %u: not used, the box stays", w, h);
     return;
   }
@@ -1500,28 +1636,77 @@ void fitBox(u32 w, u32 h) {
   snprintf(m, sizeof m, "fitted to the picture buffer, %u x %u", w, h);
   logBox(m);
 }
-// ImageGetSize on the picture buffer, in the F54's form [handle] and the 6WB's [handle][01] (a cluster refuses the form it does not
-// take); 2 s for an answer. A switch's box and the 6WB plane stay as they are.
+bool applyMeasuredSize() {
+  u32 seq = sizeLoad(g_sizeReply.seq);
+  if ((seq & 1) || seq == g_sizeReplySeen)
+    return false;
+  u32 generation = sizeLoad(g_sizeReply.generation), dimensions = sizeLoad(g_sizeReply.dimensions);
+  if (seq != sizeLoad(g_sizeReply.seq))
+    return false;
+  g_sizeReplySeen = seq;
+  if (!generation || generation != sizeLoad(g_sizeGeneration) || sizeLoad(g_sizeKey) != ((u32)g_host << 16 | hBufA) ||
+      sizeLoad(g_sizeInst) != g_inst)
+    return false;
+  g_sizeDone = true;
+  g_sizeWaiting = false;
+  sizeStore(g_sizeGeneration, 0);
+  u32 w = dimensions >> 16, h = dimensions & 0xffff;
+  logf1("CarPlayMenu: HUD: picture buffer %u is %u x %u", hBufA, w, h);
+  if (!g_boxFixed && !g_6wb) {
+    fitBox(w, h);
+    if (g_shown)
+      drawClear();  // both blink buffers and the unchanged-maneuver cache must be redrawn with the new box
+  }
+  return true;
+}
+// Each worker tick advances ImageGetSize without waiting: five 2 s windows, separated by 1/2/5/10 s. Late replies remain valid
+// after a window or the budget ends; only a new primary map/terminal identity retires them. There is no wire transaction ID.
 void measureBox() {
-  g_measureDue = false;
-  g_askH = hBufA;
-  g_askOk = 0;
-  g_askErr = 0;
+  u32 now = nowMs(), key = (u32)g_host << 16 | hBufA;
+  u32 epoch = sizeLoad(g_terminalEpoch);
+  if (g_measureDue || key != sizeLoad(g_sizeKey) || g_inst != sizeLoad(g_sizeInst) || epoch != g_sizeEpoch) {
+    sizeStore(g_sizeGeneration, 0);
+    sizeStore(g_sizeKey, key);
+    sizeStore(g_sizeInst, g_inst);
+    g_sizeAttempts = 0;
+    g_sizeWaiting = g_sizeDone = false;
+    g_sizeNext = now;
+    g_measureDue = false;
+    g_sizeEpoch = epoch;
+  }
+  if (applyMeasuredSize() || g_sizeDone)
+    return;
+  if (g_boxFixed || g_6wb) {
+    g_sizeDone = true;
+    return;
+  }
+  if (g_sizeWaiting) {
+    if ((int)(now - g_sizeDeadline) < 0)
+      return;
+    g_sizeWaiting = false;
+    logf1("CarPlayMenu: HUD: no usable answer for picture buffer %u's size (attempt %u/5)", hBufA, g_sizeAttempts);
+    if (g_sizeAttempts == 5) {
+      g_sizeDone = true;
+      return;
+    }
+    const u32 gaps[] = { 1000, 2000, 5000, 10000 };
+    g_sizeNext = now + gaps[g_sizeAttempts - 1];
+  }
+  if (!g_registered || !g_host || (int)(now - g_sizeNext) < 0)
+    return;
+  g_sizeAttempts++;
+  g_sizeWaiting = true;
+  g_sizeDeadline = now + 2000;
+  if (g_sizeAttempts == 1) {
+    if (!++g_sizeSerial)
+      ++g_sizeSerial;
+    sizeStore(g_sizeGeneration, g_sizeSerial);
+  }
+  logf1("CarPlayMenu: HUD: asking picture buffer %u's size (attempt %u/5)", hBufA, g_sizeAttempts);
   const u8 f1[] = { (u8)(hBufA >> 8), (u8)hBufA }, f2[] = { (u8)(hBufA >> 8), (u8)hBufA, 1 };
   call(0xC04, f1, 2);
   call(0xC04, f2, 3);
-  for (int i = 0; i < 40 && !g_askOk && g_askErr < 2; i++)
-    usleep(50000);
-  if (!g_askOk) {
-    logf1(g_askErr ? "CarPlayMenu: HUD: the picture buffer %u's size was refused: the box stays (hud_box sets one)"
-                   : "CarPlayMenu: HUD: no answer for the picture buffer %u's size: the box stays (hud_box sets one)",
-          hBufA);
-    return;
-  }
-  logf1("CarPlayMenu: HUD: picture buffer %u is %u x %u", hBufA, g_askW, g_askHt);
-  if (g_boxFixed || g_6wb)
-    return;
-  fitBox(g_askW, g_askHt);
+  applyMeasuredSize();
 }
 // the maps kept from an earlier start (also for the installer's clear of a left-over arrow, probe.cpp)
 void loadKept() {
@@ -1548,6 +1733,8 @@ void *worker(void *) {
   bool probed = false;
   u32 dbgTick = 0;
   int lastNight = -1;
+  bool hadRoute = false, yielded = false;
+  u32 epochSeen = sizeLoad(g_terminalEpoch);
   bool kombi = kombiOnly();
   if (kombi && g_log)
     g_log("CarPlayMenu: HUD: cluster 'kombi': the directions go to the KOMBI from librghook-kombi.so, nothing drawn on MOST");
@@ -1556,6 +1743,12 @@ void *worker(void *) {
     usleep(g_noFile && !g_shown ? 1000000 : g_shown && (g_fillOn || g_blinkOn) ? 300000 : 500000);
     if (!g_registered || !g_host)
       continue;
+    u32 epoch = sizeLoad(g_terminalEpoch);
+    if (epoch != epochSeen) {
+      forgetDrawing();
+      probed = false;
+      epochSeen = epoch;
+    }
     runCmds();
     if (kombi)
       continue;
@@ -1563,9 +1756,8 @@ void *worker(void *) {
       probed = true;
       initTerminal();
     }
-    takeLearnt();  // the navigation's set-up, if it came since
-    if (g_measureDue && !g_shown && !(g_navMs && nowMs() - g_navMs < 5000))
-      measureBox();
+    takeLearnt();                // the navigation's set-up, if it came since
+    updateLayout();              // usable layout replies can arrive after the startup wait
     if (g_night != lastNight) {  // day / night: an effect on show is drawn again in its colour
       lastNight = g_night;
       g_level = ~0u;
@@ -1596,24 +1788,26 @@ void *worker(void *) {
         g_log("CarPlayMenu: HUD: debug log off");
       g_hudDebug = on;
     }
-    if (g_seen6wb && !g_6wb && !g_shown && !g_mapKnown)  // the BMW navigation drew on 6WB handles: this cluster is a 6WB
-      use6wb("the BMW navigation draws on 0x18..0x35");
-    bool nav = g_navMs && nowMs() - g_navMs < 5000;  // the BMW navigation uses the terminal: it has priority
+    bool nav = foreignGuidance();
     if (nav) {
       if (g_shown) {
-        g_shown = false;
-        g_fresh = true;
-        g_lastType = g_lastIndex = ~0u;
-        g_blinking = false;
-        g_level = ~0u;
+        forgetDrawing();
         if (g_log)
           g_log("CarPlayMenu: HUD: BMW navigation is guiding, CarPlay guidance yields");
       }
+      yielded = true;
       continue;
     }
     Guide g;
     bool got = g_enabled && readGuide(g);
     bool have = got && g.active;
+    if (have && (!hadRoute || yielded) && g_sizeDone && sizeLoad(g_sizeGeneration) && !g_boxFixed && !g_6wb)
+      g_measureDue = true;  // another bounded series when guidance becomes usable after a failed startup
+    if (have)
+      yielded = false;  // loading/locating must not consume a pending handback
+    if (have || !got || !g.hold)
+      hadRoute = have;
+    measureBox();
     if (!have && got && g.hold && g_shown)
       continue;
     if (!have) {

@@ -75,6 +75,19 @@ and also draws on a second HUDTerminal (82/02) when the navigation uses one. Dis
 a car so far only on the MINI F54 (the F30/F31 and F25 worked with the same settings made by hand); for other clusters the settings files `hud_box`, `hud_hide`, `hud_inst` and `hud_text_handles`
 (AGENTS.md) set things by hand, and `sh carplay-advanced.sh hud-probe` shows what the cluster has.
 
+**HUD effects → HUD picture size** offers **Auto**, **Compact HUD (126 x 77)** and **Large HUD (199 x 129)** for MOST rendering.
+Compact fixes the arrow box at 53 x 53; Large keeps the original 100 x 100 box. Auto removes the old manual size overrides and
+measures the actual buffer. Existing custom boxes are preserved until a preset is selected and have no preset tick. Apply a change
+with **Restart to apply** in a full install; in HUD-only mode reconnect CarPlay. This changes the picture box, not the cluster's
+handle layout, factory bar visibility or the Ethernet KOMBI graphics.
+The presets apply to 6WA-style picture buffers; genuine 6WB perspective planes keep their own geometry.
+
+Automatic measurement makes up to five non-blocking attempts and accepts usable late replies. A new MOST registration/terminal
+identity starts a new series; after an exhausted startup, a new route or return from another renderer permits another bounded
+series. Foreign getters do not acquire the HUD or select a cluster layout. Foreign drawing on a rendered terminal takes priority;
+CarPlay stops further drawing/clearing calls and resumes after five quiet seconds. These recovery changes and menu presets have
+host regression coverage; their physical acceptance is pending.
+
 **On the KOMBI** the street is shortened to 22 characters (the windscreen HUD cuts longer names off), a highway exit shows its
 number ("Exit 23B  I-95 N"), and a maneuver without a distance shows "0 m".
 

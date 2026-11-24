@@ -22,6 +22,10 @@
     <raAction id="97" />
     <raAction id="98" />
     <raAction id="108" />
+    <hmiAction id="112" target="113" />
+    <raAction id="116" />
+    <raAction id="117" />
+    <raAction id="118" />
   </actions>
   <models>
     <textIdModel id="10" textId="1">
@@ -61,6 +65,21 @@
     <textIdModel id="110" textId="25">
       <synonyms />
     </textIdModel>
+    <textIdModel id="114" textId="26">
+      <synonyms />
+    </textIdModel>
+    <textIdModel id="122" textId="27">
+      <synonyms />
+    </textIdModel>
+    <textIdModel id="123" textId="28">
+      <synonyms />
+    </textIdModel>
+    <textIdModel id="124" textId="29">
+      <synonyms />
+    </textIdModel>
+    <raBoolModel id="119" />
+    <raBoolModel id="120" />
+    <raBoolModel id="121" />
   </models>
   <events />
   <hmiStates>
@@ -75,6 +94,7 @@
         <checkbox action="84" id="87" model="85" text="" textModel="86" />
         <checkbox action="88" id="91" model="89" text="" textModel="90" />
         <button action="92" id="95" model="94" text="" />
+        <button action="112" id="115" model="114" text="" />
         <checkbox action="108" id="111" model="109" text="" textModel="110" />
       </components>
     </hmiState>
@@ -83,6 +103,13 @@
         <radiobutton action="96" id="105" model="99" text="" textModel="102" />
         <radiobutton action="97" id="106" model="100" text="" textModel="103" />
         <radiobutton action="98" id="107" model="101" text="" textModel="104" />
+      </components>
+    </hmiState>
+    <hmiState id="113" text="HUD picture size" textModel="114">
+      <components>
+        <radiobutton action="116" id="125" model="119" text="" textModel="122" />
+        <radiobutton action="117" id="126" model="120" text="" textModel="123" />
+        <radiobutton action="118" id="127" model="121" text="" textModel="124" />
       </components>
     </hmiState>
   </hmiStates>
